@@ -10,6 +10,179 @@ from hashkey import hashkey
 from math import floor
 from matplotlib import pyplot as plt
 from scipy import interpolate
+import skimage.transform
+from math import atan2, floor, pi
+
+class RAISR:
+    def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
+                 angle_bins = 24, strength_bins = 3, coherence_bins = 3):
+        self._ratio = ratio
+        self._patchsize = patchsize
+        self._gradientsize = gradientsize
+        self._angle_bins = angle_bins
+        self._strength_bins = strength_bins
+        self._coherence_bins = coherence_bins
+        
+        self._weighting = np.diag(gaussian2d([gradientsize, gradientsize], 2).ravel())
+
+        self._Q = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
+                            patchsize * patchsize, patchsize * patchsize))
+        self._V = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
+                            patchsize * patchsize))
+        self._h = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
+                            patchsize * patchsize))
+    
+    @property
+    def ratio(self):
+        return self._ratio
+    
+    @property
+    def patchsize(self):
+        return self._patchsize
+    
+    @property
+    def gradientsize(self):
+        return self._gradientsize
+    
+    @property
+    def margin(self):
+        return floor(max(self.patchsize, self.gradientsize) / 2)
+
+    def load_grayscale_image(self, file):
+        rgb = cv2.imread(image)
+        # Extract only the luminance in YCbCr
+        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2YCrCb)[:,:,0]
+        # Normalize to [0,1]
+        return cv2.normalize(gray.astype('float'), None, gray.min()/255, gray.max()/255, cv2.NORM_MINMAX)
+    
+    def downscale(self, high_res):
+        height, width = high_res.shape
+        #TODO: This method is deprecated.
+        return imresize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)), interp='bicubic', mode='F')
+        #return cv2.resize(high_res, dsize = (floor((width+1)/self.ratio),floor((height+1)/self.ratio)), interpolation = cv2.INTER_CUBIC)
+        #return skimage.transform.resize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)),
+        #                                order = 3)
+        
+    def cheap_interpolate(self, low_res):
+        height, width = low_res.shape
+        vert_grid = np.linspace(0, height - 1, height)
+        horz_grid = np.linspace(0, width - 1, width)
+        bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, low_res, kind='linear')
+        vert_grid = np.linspace(0, height - 1, height * self.ratio - 1)
+        horz_grid = np.linspace(0, width - 1, width * self.ratio - 1)
+        return bilinear_interp(horz_grid, vert_grid)
+    
+    def learn_filters(self, file):
+        img_original = self.load_grayscale_image(file)
+        img_low_res = self.downscale(img_original)
+        img_high_res = self.cheap_interpolate(img_low_res)
+        
+        height, width = img_high_res.shape
+        patchmargin = floor(self.patchsize / 2)
+        gradientmargin = floor(self.gradientsize / 2)
+        
+        operationcount = 0
+        totaloperations = (height-2*margin) * (width-2*margin)
+        for row in range(self.margin, height - self.margin):
+            for col in range(self.margin, width - self.margin):
+                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                    print('\r|', end='')
+                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                operationcount += 1
+                # Get patch
+                patch = img_high_res[row-patchmargin:row+patchmargin+1, col-patchmargin:col+patchmargin+1]
+                patch = np.matrix(patch.ravel())
+                # Get gradient block
+                gradientblock = img_high_res[row-gradientmargin:row+gradientmargin+1, col-gradientmargin:col+gradientmargin+1]
+                # Calculate hashkey
+                angle, strength, coherence = self.hashkey(gradientblock)
+                # Get pixel type
+                pixeltype = self.pixeltype(row-margin, col-margin)
+                # Compute A'A and A'b
+                ATA, ATb = self.linear_regression_matrices(patch, img_original[row,col])
+                # Compute Q and V
+                self._Q[angle,strength,coherence,pixeltype] += ATA
+                self._V[angle,strength,coherence,pixeltype] += ATb
+                #mark[coherence*3+strength, angle, pixeltype] += 1
+                
+    def pixeltype(self, row_index, col_index):
+        return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
+    
+    def linear_regression_matrices(self, patch, pixel):
+        ATA = np.dot(patch.T, patch)
+        ATb = np.dot(patch.T, pixel)
+        ATb = np.array(ATb).ravel()
+        return ATA, ATb
+        
+    def hashkey(self, block):
+        # Calculate gradient
+        gy, gx = np.gradient(block)
+    
+        # Transform 2D matrix into 1D array
+        gx = gx.ravel()
+        gy = gy.ravel()
+    
+        # SVD calculation
+        G = np.vstack((gx,gy)).T
+        GTWG = G.T.dot(self._weighting).dot(G)
+        # TODO: Use eigh instead of eig
+        w, v = np.linalg.eig(GTWG);
+    
+        # Make sure V and D contain only real numbers
+        # TODO: Remove check for reals, when using eigh above
+        nonzerow = np.count_nonzero(np.isreal(w))
+        nonzerov = np.count_nonzero(np.isreal(v))
+        if nonzerow != 0:
+            w = np.real(w)
+        if nonzerov != 0:
+            v = np.real(v)
+    
+        # Sort w and v according to the descending order of w
+        idx = w.argsort()[::-1]
+        w = w[idx]
+        v = v[:,idx]
+    
+        # Calculate theta
+        theta = atan2(v[1,0], v[0,0])
+        if theta < 0:
+            theta = theta + pi
+    
+        # Calculate lamda
+        lamda = w[0]
+    
+        # Calculate u
+        sqrtlamda1 = np.sqrt(w[0])
+        sqrtlamda2 = np.sqrt(w[1])
+        if sqrtlamda1 + sqrtlamda2 == 0:
+            u = 0
+        else:
+            u = (sqrtlamda1 - sqrtlamda2)/(sqrtlamda1 + sqrtlamda2)
+    
+        # Quantize
+        angle = floor(theta/pi*self._angle_bins)
+        if lamda < 0.0001:
+            strength = 0
+        elif lamda > 0.001:
+            strength = 2
+        else:
+            strength = 1
+        if u < 0.25:
+            coherence = 0
+        elif u > 0.5:
+            coherence = 2
+        else:
+            coherence = 1
+    
+        # Bound the output to the desired ranges
+        if angle > 23:
+            angle = 23
+        elif angle < 0:
+            angle = 0
+    
+        return angle, strength, coherence
+
 
 # Define parameters
 R = 2
