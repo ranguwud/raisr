@@ -47,9 +47,21 @@ class RAISR:
     @property
     def margin(self):
         return floor(max(self.patchsize, self.gradientsize) / 2)
+    
+    @property
+    def angle_bins(self):
+        return self._angle_bins
+    
+    @property
+    def strength_bins(self):
+        return self._strength_bins
+    
+    @property
+    def coherence_bins(self):
+        return self._coherence_bins
 
     def load_grayscale_image(self, file):
-        rgb = cv2.imread(image)
+        rgb = cv2.imread(file)
         # Extract only the luminance in YCbCr
         gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2YCrCb)[:,:,0]
         # Normalize to [0,1]
@@ -82,7 +94,7 @@ class RAISR:
         gradientmargin = floor(self.gradientsize / 2)
         
         operationcount = 0
-        totaloperations = (height-2*margin) * (width-2*margin)
+        totaloperations = (height-2*self.margin) * (width-2*self.margin)
         for row in range(self.margin, height - self.margin):
             for col in range(self.margin, width - self.margin):
                 if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
@@ -99,13 +111,54 @@ class RAISR:
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradientblock)
                 # Get pixel type
-                pixeltype = self.pixeltype(row-margin, col-margin)
+                pixeltype = self.pixeltype(row-self.margin, col-self.margin)
                 # Compute A'A and A'b
                 ATA, ATb = self.linear_regression_matrices(patch, img_original[row,col])
                 # Compute Q and V
                 self._Q[angle,strength,coherence,pixeltype] += ATA
                 self._V[angle,strength,coherence,pixeltype] += ATb
                 #mark[coherence*3+strength, angle, pixeltype] += 1
+    
+    def permute_bins(self):
+        print('\r', end='')
+        print(' ' * 60, end='')
+        print('\rPreprocessing permutation matrices P for nearly-free 8x more learning examples ...')
+        #TODO: What exactly is going on here?
+        P = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize, 7))
+        rotate = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize))
+        flip = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize))
+        for i in range(0, self.patchsize*self.patchsize):
+            i1 = i % self.patchsize
+            i2 = floor(i / self.patchsize)
+            j = self.patchsize * self.patchsize - self.patchsize + i2 - self.patchsize * i1
+            rotate[j,i] = 1
+            k = self.patchsize * (i2 + 1) - i1 - 1
+            flip[k,i] = 1
+        for i in range(1, 8):
+            i1 = i % 4
+            i2 = floor(i / 4)
+            P[:,:,i-1] = np.linalg.matrix_power(flip,i2).dot(np.linalg.matrix_power(rotate,i1))
+        Qextended = np.zeros((self.angle_bins, self.strength_bins, self.coherence_bins, self.ratio*self.ratio, self.patchsize*self.patchsize, self.patchsize*self.patchsize))
+        Vextended = np.zeros((self.angle_bins, self.strength_bins, self.coherence_bins, self.ratio*self.ratio, self.patchsize*self.patchsize))
+        for pixeltype in range(0, self.ratio*self.ratio):
+            for angle in range(0, self.angle_bins):
+                for strength in range(0, self.strength_bins):
+                    for coherence in range(0, self.coherence_bins):
+                        for m in range(1, 8):
+                            m1 = m % 4
+                            m2 = floor(m / 4)
+                            newangleslot = angle
+                            if m2 == 1:
+                                newangleslot = self.angle_bins-angle-1
+                            newangleslot = int(newangleslot-self.angle_bins/2*m1)
+                            while newangleslot < 0:
+                                newangleslot += self.angle_bins
+                            newQ = P[:,:,m-1].T.dot(self._Q[angle,strength,coherence,pixeltype]).dot(P[:,:,m-1])
+                            newV = P[:,:,m-1].T.dot(self._V[angle,strength,coherence,pixeltype])
+                            Qextended[newangleslot,strength,coherence,pixeltype] += newQ
+                            Vextended[newangleslot,strength,coherence,pixeltype] += newV
+        self._Q += Qextended
+        self._V += Vextended
                 
     def pixeltype(self, row_index, col_index):
         return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
