@@ -15,6 +15,10 @@ class Image:
     def __getitem__(self, indices):
         return self._data[indices]
     
+    def patch(self, row, col, size):
+        margin = size // 2
+        return self._data[row-margin:row+margin+1, col-margin:col+margin+1]
+    
     @property
     def shape(self):
         return self._data.shape
@@ -102,8 +106,6 @@ class RAISR:
         img_high_res = img_low_res.cheap_interpolate(self.ratio)
         
         height, width = img_high_res.shape
-        patchmargin = floor(self.patchsize / 2)
-        gradientmargin = floor(self.gradientsize / 2)
         
         operationcount = 0
         totaloperations = (height-2*self.margin) * (width-2*self.margin)
@@ -116,10 +118,9 @@ class RAISR:
                     print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
                 operationcount += 1
                 # Get patch
-                patch = img_high_res[row-patchmargin:row+patchmargin+1, col-patchmargin:col+patchmargin+1]
-                patch = np.matrix(patch.ravel())
+                patch = img_high_res.patch(row, col, self.patchsize).ravel()
                 # Get gradient block
-                gradientblock = img_high_res[row-gradientmargin:row+gradientmargin+1, col-gradientmargin:col+gradientmargin+1]
+                gradientblock = img_high_res.patch(row, col, self.gradientsize)
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradientblock)
                 # Get pixel type
