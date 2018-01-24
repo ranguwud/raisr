@@ -2,11 +2,34 @@
 import cv2
 import numpy as np
 import pickle
+import weakref
 from scipy.misc import imresize
 from cgls import cgls
 from gaussian2d import gaussian2d
 from scipy import interpolate
 from math import atan2, floor, pi
+
+class Pixel:
+    def __init__(self, parent, row, col):
+        self._parent = weakref.ref(parent)
+        self._col = col
+        self._row = row
+        self._value = parent[row, col]
+    
+    @property
+    def col(self):
+        return self._col
+    
+    @property
+    def row(self):
+        return self._row
+    
+    @property
+    def value(self):
+        return self._value
+    
+    def patch(self, size):
+        return self._parent().patch(self._row, self._col, size)
 
 class Image:
     def __init__(self, data):
@@ -18,6 +41,16 @@ class Image:
     def patch(self, row, col, size):
         margin = size // 2
         return self._data[row-margin:row+margin+1, col-margin:col+margin+1]
+    
+    def pixels(self, *, margin = 0):
+        height, width = self.shape
+        for row in range(margin, height - margin):
+            for col in range(margin, width - margin):
+                yield Pixel(self, row, col)
+    
+    def number_of_pixels(self, *, margin = 0):
+        height, width = self._data.shape
+        return (height - 2*margin) * (width - 2*margin)
     
     @property
     def shape(self):
@@ -108,29 +141,29 @@ class RAISR:
         height, width = img_high_res.shape
         
         operationcount = 0
-        totaloperations = (height-2*self.margin) * (width-2*self.margin)
-        for row in range(self.margin, height - self.margin):
-            for col in range(self.margin, width - self.margin):
-                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                    print('\r|', end='')
-                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-                operationcount += 1
-                # Get patch
-                patch = img_high_res.patch(row, col, self.patchsize).ravel()
-                # Get gradient block
-                gradientblock = img_high_res.patch(row, col, self.gradientsize)
-                # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradientblock)
-                # Get pixel type
-                pixeltype = self.pixeltype(row-self.margin, col-self.margin)
-                # Compute A'A and A'b
-                ATA, ATb = self.linear_regression_matrices(patch, img_original[row,col])
-                # Compute Q and V
-                self._Q[angle,strength,coherence,pixeltype] += ATA
-                self._V[angle,strength,coherence,pixeltype] += ATb
-                #mark[coherence*3+strength, angle, pixeltype] += 1
+        totaloperations = img_high_res.number_of_pixels(margin = self.margin)
+        for pixel in img_high_res.pixels(margin = self.margin):
+            if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                print('\r|', end='')
+                print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+            operationcount += 1
+            # Get patch
+            # TODO: This has size pathsize² * patchsize². Is that correct?
+            patch = np.matrix(pixel.patch(self.patchsize).ravel())
+            # Get gradient block
+            gradientblock = pixel.patch(self.gradientsize)
+            # Calculate hashkey
+            angle, strength, coherence = self.hashkey(gradientblock)
+            # Get pixel type
+            pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+            # Compute A'A and A'b
+            ATA, ATb = self.linear_regression_matrices(patch, img_original[pixel.row, pixel.col])
+            # Compute Q and V
+            self._Q[angle,strength,coherence,pixeltype] += ATA
+            self._V[angle,strength,coherence,pixeltype] += ATb
+            #mark[coherence*3+strength, angle, pixeltype] += 1
     
     def permute_bins(self):
         print('\r', end='')
@@ -197,7 +230,7 @@ class RAISR:
                             print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
                         operationcount += 1
                         # TODO: Check functionality of cgls function
-                        self._h[angle,strength,coherence,pixeltype] = cgls(Q[angle,strength,coherence,pixeltype], V[angle,strength,coherence,pixeltype])
+                        self._h[angle,strength,coherence,pixeltype] = cgls(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype])
 
     def dump_filter(self, fname = "filter.pkl"):
         with open(fname, "wb") as f:
