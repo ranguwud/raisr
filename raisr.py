@@ -8,6 +8,47 @@ from gaussian2d import gaussian2d
 from scipy import interpolate
 from math import atan2, floor, pi
 
+class Image:
+    def __init__(self, data):
+        self._data = data
+    
+    def __getitem__(self, indices):
+        return self._data[indices]
+    
+    @property
+    def shape(self):
+        return self._data.shape
+    
+    def to_grayscale(self):
+        gray_data = cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb)[:,:,0]
+        gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
+                                             gray_data.min() / 255, gray_data.max() / 255,
+                                             cv2.NORM_MINMAX)
+        return Image(gray_data_normalized)
+
+    def downscale(self, ratio):
+        height, width = self._data.shape
+        downscaled_height = floor((height+1)/ratio)
+        downscaled_width = floor((width+1)/ratio)
+        #TODO: This method is deprecated.
+        return Image(imresize(self._data, (downscaled_height, downscaled_width), interp='bicubic', mode='F'))
+        #return cv2.resize(high_res, dsize = (floor((width+1)/self.ratio),floor((height+1)/self.ratio)), interpolation = cv2.INTER_CUBIC)
+        #return skimage.transform.resize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)),
+        #                                order = 3)
+        
+    def cheap_interpolate(self, ratio):
+        height, width = self._data.shape
+        vert_grid = np.linspace(0, height - 1, height)
+        horz_grid = np.linspace(0, width - 1, width)
+        bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, self._data, kind='linear')
+        vert_grid = np.linspace(0, height - 1, height * ratio - 1)
+        horz_grid = np.linspace(0, width - 1, width * ratio - 1)
+        return Image(bilinear_interp(horz_grid, vert_grid))
+    
+class ImageFile(Image):
+    def __init__(self, fname):
+        super().__init__(cv2.imread(fname))
+
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
                  angle_bins = 24, strength_bins = 3, coherence_bins = 3):
@@ -55,34 +96,10 @@ class RAISR:
     def coherence_bins(self):
         return self._coherence_bins
 
-    def load_grayscale_image(self, file):
-        rgb = cv2.imread(file)
-        # Extract only the luminance in YCbCr
-        gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2YCrCb)[:,:,0]
-        # Normalize to [0,1]
-        return cv2.normalize(gray.astype('float'), None, gray.min()/255, gray.max()/255, cv2.NORM_MINMAX)
-    
-    def downscale(self, high_res):
-        height, width = high_res.shape
-        #TODO: This method is deprecated.
-        return imresize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)), interp='bicubic', mode='F')
-        #return cv2.resize(high_res, dsize = (floor((width+1)/self.ratio),floor((height+1)/self.ratio)), interpolation = cv2.INTER_CUBIC)
-        #return skimage.transform.resize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)),
-        #                                order = 3)
-        
-    def cheap_interpolate(self, low_res):
-        height, width = low_res.shape
-        vert_grid = np.linspace(0, height - 1, height)
-        horz_grid = np.linspace(0, width - 1, width)
-        bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, low_res, kind='linear')
-        vert_grid = np.linspace(0, height - 1, height * self.ratio - 1)
-        horz_grid = np.linspace(0, width - 1, width * self.ratio - 1)
-        return bilinear_interp(horz_grid, vert_grid)
-    
     def learn_filters(self, file):
-        img_original = self.load_grayscale_image(file)
-        img_low_res = self.downscale(img_original)
-        img_high_res = self.cheap_interpolate(img_low_res)
+        img_original = ImageFile(file).to_grayscale()
+        img_low_res = img_original.downscale(self.ratio)
+        img_high_res = img_low_res.cheap_interpolate(self.ratio)
         
         height, width = img_high_res.shape
         patchmargin = floor(self.patchsize / 2)
