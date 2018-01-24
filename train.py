@@ -13,6 +13,7 @@ from scipy import interpolate
 import skimage.transform
 from math import atan2, floor, pi
 
+#%%
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
                  angle_bins = 24, strength_bins = 3, coherence_bins = 3):
@@ -168,7 +169,28 @@ class RAISR:
         ATb = np.dot(patch.T, pixel)
         ATb = np.array(ATb).ravel()
         return ATA, ATb
-        
+    
+    def calculate_optimal_filter(self):
+        print('Computing h ...')
+        operationcount = 0
+        totaloperations = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins
+        for pixeltype in range(0, self.ratio * self.ratio):
+            for angle in range(0, self.angle_bins):
+                for strength in range(0, self.strength_bins):
+                    for coherence in range(0, self.coherence_bins):
+                        if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                            print('\r|', end='')
+                            print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                            print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                            print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                        operationcount += 1
+                        # TODO: Check functionality of cgls function
+                        self._h[angle,strength,coherence,pixeltype] = cgls(Q[angle,strength,coherence,pixeltype], V[angle,strength,coherence,pixeltype])
+
+    def dump_filter(self, fname = "filter.pkl"):
+        with open(fname, "wb") as f:
+            pickle.dump(self._h, f)
+
     def hashkey(self, block):
         # Calculate gradient
         gy, gx = np.gradient(block)
@@ -236,7 +258,7 @@ class RAISR:
     
         return angle, strength, coherence
 
-
+#%%
 # Define parameters
 R = 2
 patchsize = 11
