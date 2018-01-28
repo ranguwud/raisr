@@ -167,8 +167,9 @@ class RAISR:
                             print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
                             print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
                         operationcount += 1
-                        # TODO: Check functionality of cgls function
-                        self._h[angle,strength,coherence,pixeltype] = cgls(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype])
+
+                        h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
+                        self._h[angle,strength,coherence,pixeltype] = h
     
     def upscale(self, file, show = False):
         img_original_ycrcb = Image.from_file(file).to_ycrcb()
@@ -198,6 +199,10 @@ class RAISR:
             
             sisr[pixel.row - self.margin, pixel.col - self.margin] = \
                 patch.dot(self._h[angle,strength,coherence,pixeltype])
+        
+        #TODO: Do not just cut off, but use cheap upscaled pixels instead
+        sisr[sisr < 0] = 0.0
+        sisr[sisr > 1] = 1.0
 
         # Scale back to [0,255]
         sisr = cv2.normalize(sisr.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
