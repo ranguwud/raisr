@@ -6,7 +6,6 @@ import weakref
 import matplotlib.pyplot as plt
 from scipy.misc import imresize
 from cgls import cgls
-from gaussian2d import gaussian2d
 from scipy import interpolate
 from math import atan2, floor, pi
 
@@ -139,7 +138,7 @@ class RAISR:
         self._strength_bins = strength_bins
         self._coherence_bins = coherence_bins
         
-        self._weighting = np.diag(gaussian2d([gradientsize, gradientsize], 2).ravel())
+        self._weighting = np.diag(RAISR.gaussian2d([gradientsize, gradientsize], 2).ravel())
 
         self._Q = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize, patchsize * patchsize))
@@ -147,6 +146,22 @@ class RAISR:
                             patchsize * patchsize))
         self._h = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize))
+    
+    @staticmethod
+    def gaussian2d(shape=(3,3),sigma=0.5):
+        """
+        2D gaussian mask - should give the same result as MATLAB's
+        fspecial('gaussian',[shape],[sigma])
+        """
+        m,n = [(ss-1.)/2. for ss in shape]
+        y,x = np.ogrid[-m:m+1,-n:n+1]
+        h = np.exp( -(x*x + y*y) / (2.*sigma*sigma) )
+        h[ h < np.finfo(h.dtype).eps*h.max() ] = 0
+        sumh = h.sum()
+        if sumh != 0:
+            h /= sumh
+        return h
+
     
     @property
     def ratio(self):
@@ -397,3 +412,22 @@ class RAISR:
             angle = 0
     
         return angle, strength, coherence
+    
+    def filterplot(self):
+        for pixeltype in range(0,self.ratio*self.ratio):
+            maxvalue = self._h[:,:,:,pixeltype].max()
+            minvalue = self._h[:,:,:,pixeltype].min()
+            fig = plt.figure(pixeltype)
+            plotcounter = 1
+            for coherence in range(0, self.coherence_bins):
+                for strength in range(0, self.strength_bins):
+                    for angle in range(0, self.angle_bins):
+                        filter1d = self._h[angle,strength,coherence,pixeltype]
+                        filter2d = np.reshape(filter1d, (self.patchsize, self.patchsize))
+                        ax = fig.add_subplot(self.strength_bins*self.coherence_bins, self.angle_bins, plotcounter)
+                        ax.imshow(filter2d, interpolation='none', extent=[0,10,0,10], vmin=minvalue, vmax=maxvalue)
+                        ax.axis('off')
+                        plotcounter += 1
+            plt.axis('off')
+            plt.show()
+
