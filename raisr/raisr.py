@@ -200,7 +200,7 @@ class RAISR:
                 patch.dot(self._h[angle,strength,coherence,pixeltype])
 
         # Scale back to [0,255]
-        sisr = cv2.normalize(sisr.astype('float'), None, 0, 255, cv2.NORM_MINMAX)
+        sisr = cv2.normalize(sisr.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
         # TODO: Use patch or similar to perform this assignment
         img_cheap_upscaled_ycrcb._data[self.margin:height-self.margin,self.margin:width-self.margin,0] = \
             sisr

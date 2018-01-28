@@ -63,13 +63,13 @@ class Image:
         if self._mode == 'RGB':
             gray_data = cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb)[:,:,0]
             gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
-                                                 gray_data.min() / 255, gray_data.max() / 255,
+                                                 gray_data.min() / 255.0, gray_data.max() / 255.0,
                                                  cv2.NORM_MINMAX)
             return Image(gray_data_normalized, mode = 'gray')
         elif self._mode == 'YCrCb':
             gray_data = self._data[:,:,0]
             gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
-                                                 gray_data.min() / 255, gray_data.max() / 255,
+                                                 gray_data.min() / 255.0, gray_data.max() / 255.0,
                                                  cv2.NORM_MINMAX)
             return Image(gray_data_normalized, mode = 'gray')
         else:
