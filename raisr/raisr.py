@@ -5,7 +5,7 @@ import pickle
 import matplotlib.pyplot as plt
 from cgls import cgls
 from math import atan2, floor, pi
-from image import Image
+from .image import Image
 
 
 class RAISR:
