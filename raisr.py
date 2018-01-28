@@ -3,6 +3,7 @@ import cv2
 import numpy as np
 import pickle
 import weakref
+import matplotlib.pyplot as plt
 from scipy.misc import imresize
 from cgls import cgls
 from gaussian2d import gaussian2d
@@ -32,8 +33,9 @@ class Pixel:
         return self._parent().patch(self._row, self._col, size)
 
 class Image:
-    def __init__(self, data):
+    def __init__(self, data, mode = 'RGB'):
         self._data = data
+        self._mode = mode
     
     def __getitem__(self, indices):
         return self._data[indices]
@@ -57,34 +59,75 @@ class Image:
         return self._data.shape
     
     def to_grayscale(self):
-        gray_data = cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb)[:,:,0]
-        gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
-                                             gray_data.min() / 255, gray_data.max() / 255,
-                                             cv2.NORM_MINMAX)
-        return Image(gray_data_normalized)
+        if self._mode == 'RGB':
+            gray_data = cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb)[:,:,0]
+            gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
+                                                 gray_data.min() / 255, gray_data.max() / 255,
+                                                 cv2.NORM_MINMAX)
+            return Image(gray_data_normalized, mode = 'gray')
+        elif self._mode == 'YCrCb':
+            gray_data = self._data[:,:,0]
+            gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
+                                                 gray_data.min() / 255, gray_data.max() / 255,
+                                                 cv2.NORM_MINMAX)
+            return Image(gray_data_normalized, mode = 'gray')
+        else:
+            raise ValueError('Expected RGB or YCrCb mode image.')
+    
+    def to_ycrcb(self):
+        if self._mode == 'RGB':
+            return Image(cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb), mode = 'YCrCb')
+        else:
+            raise ValueError('Expected RGB mode image.')
+    
+    def to_rgb(self):
+        if self._mode == 'YCrCb':
+            return Image(cv2.cvtColor(np.uint8(self._data), cv2.COLOR_YCrCb2RGB), mode = 'RGB')
+        else:
+            raise ValueError('Expected YCrCb mode image.')
 
     def downscale(self, ratio):
+        # TODO: Allow to choose downscaling algorithm
         height, width = self._data.shape
         downscaled_height = floor((height+1)/ratio)
         downscaled_width = floor((width+1)/ratio)
         #TODO: This method is deprecated.
-        return Image(imresize(self._data, (downscaled_height, downscaled_width), interp='bicubic', mode='F'))
+        return Image(imresize(self._data, (downscaled_height, downscaled_width), interp='bicubic', mode='F'), mode = self._mode)
         #return cv2.resize(high_res, dsize = (floor((width+1)/self.ratio),floor((height+1)/self.ratio)), interpolation = cv2.INTER_CUBIC)
         #return skimage.transform.resize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)),
         #                                order = 3)
         
     def cheap_interpolate(self, ratio):
-        height, width = self._data.shape
-        vert_grid = np.linspace(0, height - 1, height)
-        horz_grid = np.linspace(0, width - 1, width)
-        bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, self._data, kind='linear')
-        vert_grid = np.linspace(0, height - 1, height * ratio - 1)
-        horz_grid = np.linspace(0, width - 1, width * ratio - 1)
-        return Image(bilinear_interp(horz_grid, vert_grid))
+        # TODO: Allow to choose upscaling algorithm.
+        if self._mode == 'gray':
+            height, width = self._data.shape
+            vert_grid = np.linspace(0, height - 1, height)
+            horz_grid = np.linspace(0, width - 1, width)
+            bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, self._data, kind='linear')
+            vert_grid = np.linspace(0, height - 1, height * ratio - 1)
+            horz_grid = np.linspace(0, width - 1, width * ratio - 1)
+            return Image(bilinear_interp(horz_grid, vert_grid), mode = self._mode)
+        else:
+            height, width, chan = self._data.shape
+            vert_grid_LR = np.linspace(0, height - 1, height)
+            horz_grid_LR = np.linspace(0, width - 1, width)
+            vert_grid_HR = np.linspace(0, height - 1, height * ratio - 1)
+            horz_grid_HR = np.linspace(0, width - 1, width * ratio - 1)
+            result = np.zeros((len(vert_grid_HR), len(horz_grid_HR), chan))
+            for idx in range(chan):
+                channel = self._data[:,:,idx]
+                bilinear_interp = interpolate.interp2d(horz_grid_LR, vert_grid_LR, channel, kind='linear')
+                result[:,:,idx] = bilinear_interp(horz_grid_HR, vert_grid_HR)
+            return Image(result, mode = self._mode)
+    
+    def export(self, fname):
+        # TODO: Make this work also for other color modes
+        cv2.imwrite(fname, cv2.cvtColor(self._data, cv2.COLOR_RGB2BGR))
     
 class ImageFile(Image):
     def __init__(self, fname):
-        super().__init__(cv2.imread(fname))
+        # TODO: Detect input color space
+        super().__init__(cv2.imread(fname), mode = 'RGB')
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
@@ -231,11 +274,63 @@ class RAISR:
                         operationcount += 1
                         # TODO: Check functionality of cgls function
                         self._h[angle,strength,coherence,pixeltype] = cgls(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype])
+    
+    def upscale(self, file, show = False):
+        img_original_ycrcb = ImageFile(file).to_ycrcb()
+        img_original_grey = img_original_ycrcb.to_grayscale()
+        
+        img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
+        img_cheap_upscaled_grey = img_original_grey.cheap_interpolate(self.ratio)
+        
+        height, width = img_cheap_upscaled_grey.shape
+        sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
+        operationcount = 0
+        totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
+        for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+            if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                print('\r|', end='')
+                print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+            operationcount += 1
+            patch = pixel.patch(self.patchsize).ravel()
+            # Get gradient block
+            gradientblock = pixel.patch(self.gradientsize)
+            # Calculate hashkey
+            angle, strength, coherence = self.hashkey(gradientblock)
+            # Get pixel type
+            pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+            
+            sisr[pixel.row - self.margin, pixel.col - self.margin] = \
+                patch.dot(self._h[angle,strength,coherence,pixeltype])
+
+        # Scale back to [0,255]
+        sisr = cv2.normalize(sisr.astype('float'), None, 0, 255, cv2.NORM_MINMAX)
+        # TODO: Use patch or similar to perform this assignment
+        img_cheap_upscaled_ycrcb._data[self.margin:height-self.margin,self.margin:width-self.margin,0] = \
+            sisr
+        
+        if show:
+            fig = plt.figure()
+            ax = fig.add_subplot(1, 3, 1)
+            ax.imshow(img_original_grey._data, cmap='gray', interpolation='none')
+            ax = fig.add_subplot(1, 3, 2)
+            ax.imshow(img_cheap_upscaled_grey._data, cmap='gray', interpolation='none')
+            ax = fig.add_subplot(1, 3, 3)
+            ax.imshow(img_cheap_upscaled_ycrcb._data[:,:,0], cmap='gray', interpolation='none')
+            plt.show()
+        
+        return img_cheap_upscaled_ycrcb.to_rgb()
 
     def dump_filter(self, fname = "filter.pkl"):
         with open(fname, "wb") as f:
             pickle.dump(self._h, f)
-
+    
+    def load_filter(self, fname = "filter.pkl"):
+        # TODO: Add check for dimensions of h
+        with open(fname, "rb") as f:
+            self._h = pickle.load(f)
+            
     def hashkey(self, block):
         # Calculate gradient
         gy, gx = np.gradient(block)
