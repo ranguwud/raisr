@@ -3,7 +3,6 @@ import cv2
 import numpy as np
 import pickle
 import matplotlib.pyplot as plt
-from cgls import cgls
 from math import atan2, floor, pi
 from .image import Image
 
@@ -300,7 +299,7 @@ class RAISR:
                         filter1d = self._h[angle,strength,coherence,pixeltype]
                         filter2d = np.reshape(filter1d, (self.patchsize, self.patchsize))
                         ax = fig.add_subplot(self.strength_bins*self.coherence_bins, self.angle_bins, plotcounter)
-                        ax.imshow(filter2d, interpolation='none', extent=[0,10,0,10], vmin=minvalue, vmax=maxvalue)
+                        ax.imshow(filter2d, interpolation='none', extent=[0,10,0,10], vmin=minvalue, vmax=maxvalue, cmap=plt.cm.seismic)
                         ax.axis('off')
                         plotcounter += 1
             plt.axis('off')
