@@ -237,17 +237,7 @@ class RAISR:
         # SVD calculation
         G = np.vstack((gx,gy)).T
         GTWG = G.T.dot(self._weighting).dot(G)
-        # TODO: Use eigh instead of eig
-        w, v = np.linalg.eig(GTWG);
-    
-        # Make sure V and D contain only real numbers
-        # TODO: Remove check for reals, when using eigh above
-        nonzerow = np.count_nonzero(np.isreal(w))
-        nonzerov = np.count_nonzero(np.isreal(v))
-        if nonzerow != 0:
-            w = np.real(w)
-        if nonzerov != 0:
-            v = np.real(v)
+        w, v = np.linalg.eigh(GTWG);
     
         # Sort w and v according to the descending order of w
         idx = w.argsort()[::-1]
