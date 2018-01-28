@@ -36,6 +36,10 @@ class Image:
         self._data = data
         self._mode = mode
     
+    @classmethod
+    def from_file(cls, fname):
+        return cls(cv2.imread(fname), mode = 'RGB')
+        
     def __getitem__(self, indices):
         return self._data[indices]
     
@@ -122,11 +126,7 @@ class Image:
     def export(self, fname):
         # TODO: Make this work also for other color modes
         cv2.imwrite(fname, cv2.cvtColor(self._data, cv2.COLOR_RGB2BGR))
-    
-class ImageFile(Image):
-    def __init__(self, fname):
-        # TODO: Detect input color space
-        super().__init__(cv2.imread(fname), mode = 'RGB')
+
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
@@ -192,7 +192,7 @@ class RAISR:
         return self._coherence_bins
 
     def learn_filters(self, file):
-        img_original = ImageFile(file).to_grayscale()
+        img_original = Image.from_file(file).to_grayscale()
         img_low_res = img_original.downscale(self.ratio)
         img_high_res = img_low_res.cheap_interpolate(self.ratio)
         
@@ -291,7 +291,7 @@ class RAISR:
                         self._h[angle,strength,coherence,pixeltype] = cgls(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype])
     
     def upscale(self, file, show = False):
-        img_original_ycrcb = ImageFile(file).to_ycrcb()
+        img_original_ycrcb = Image.from_file(file).to_ycrcb()
         img_original_grey = img_original_ycrcb.to_grayscale()
         
         img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
