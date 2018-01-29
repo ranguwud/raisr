@@ -87,8 +87,7 @@ class RAISR:
                 print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
             operationcount += 1
             # Get patch
-            # TODO: This has size pathsize² * patchsize². Is that correct?
-            patch = np.matrix(pixel.patch(self.patchsize).ravel())
+            patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
             # Get gradient block
             gradientblock = pixel.patch(self.gradientsize)
             # Calculate hashkey
@@ -147,9 +146,8 @@ class RAISR:
         return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
     
     def linear_regression_matrices(self, patch, pixel):
-        ATA = np.dot(patch.T, patch)
-        ATb = np.dot(patch.T, pixel)
-        ATb = np.array(ATb).ravel()
+        ATA = np.matmul(patch.T, patch)
+        ATb = (patch.T * pixel).ravel()
         return ATA, ATb
     
     def calculate_optimal_filter(self):
