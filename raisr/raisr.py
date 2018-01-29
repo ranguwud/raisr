@@ -168,7 +168,7 @@ class RAISR:
                         h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
                         self._h[angle,strength,coherence,pixeltype] = h
     
-    def upscale(self, file, show = False):
+    def upscale(self, file, show = False, blending = None):
         img_original_ycrcb = Image.from_file(file).to_ycrcb()
         img_original_grey = img_original_ycrcb.to_grayscale()
         
@@ -201,12 +201,32 @@ class RAISR:
         sisr[sisr < 0] = 0.0
         sisr[sisr > 1] = 1.0
 
-        # Scale back to [0,255]
-        sisr = cv2.normalize(sisr.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+        img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
-        img_cheap_upscaled_ycrcb._data[self.margin:height-self.margin,self.margin:width-self.margin,0] = \
-            sisr
+        img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
         
+        if blending == 'hamming':
+            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col)
+                ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col)
+                changed = bin(ct_upscaled ^ ct_filtered).count('1')
+                # TODO: Replace by sigmoidal function using a lookup table
+                weight = np.sqrt(1. - (1. - 0.125*changed)**2)
+                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+        
+#        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
+#                   vmin = -0.1, vmax = 0.1, cmap=plt.cm.seismic)
+#        plt.show()
+#
+#        plt.imshow(img_filtered_grey._data - img_cheap_upscaled_grey._data, interpolation = 'none',
+#                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
+#        plt.show()
+
+        # Scale back to [0,255]
+        img_cheap_upscaled_ycrcb._data[:,:,0] = \
+            cv2.normalize(img_filtered_grey._data.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+
         if show:
             fig = plt.figure()
             ax = fig.add_subplot(1, 3, 1)
