@@ -45,6 +45,13 @@ class Image:
         margin = size // 2
         return self._data[row-margin:row+margin+1, col-margin:col+margin+1]
     
+    def census_transform(self, row, col, operator = np.greater, fuzzyness = 0.0):
+        patch = self.patch(row, col, 3)
+        comp_hi = operator(patch[1,1] + fuzzyness, patch)
+        comp_lo = operator(patch[1,1] - fuzzyness, patch)
+        bools = np.all((comp_hi, comp_lo), axis = 0).astype(int).ravel()
+        return np.dot(bools, np.array((128, 16, 4, 64, 0, 2, 32, 8, 1)))
+    
     def pixels(self, *, margin = 0):
         height, width = self.shape
         for row in range(margin, height - margin):

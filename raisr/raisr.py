@@ -230,6 +230,8 @@ class RAISR:
             
     def hashkey(self, block):
         # Calculate gradient
+        # TODO: This seems to be SLOW. Can it be replaced by differences in
+        # x and y direction, respectively?
         gy, gx = np.gradient(block)
     
         # Transform 2D matrix into 1D array
@@ -263,6 +265,7 @@ class RAISR:
             u = (sqrtlamda1 - sqrtlamda2)/(sqrtlamda1 + sqrtlamda2)
     
         # Quantize
+        # TODO: Confirm these values for strength and coherence
         angle = floor(theta/pi*self._angle_bins)
         if lamda < 0.0001:
             strength = 0
