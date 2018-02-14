@@ -80,6 +80,7 @@ class RAISR:
         operationcount = 0
         totaloperations = img_high_res.number_of_pixels(margin = self.margin)
         for pixel in img_high_res.pixels(margin = self.margin):
+            # TODO: Use tqdm progress bar
             if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                 print('\r|', end='')
                 print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -158,6 +159,7 @@ class RAISR:
             for angle in range(0, self.angle_bins):
                 for strength in range(0, self.strength_bins):
                     for coherence in range(0, self.coherence_bins):
+                        # TODO: Use tqdm progress bar
                         if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                             print('\r|', end='')
                             print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -168,7 +170,7 @@ class RAISR:
                         h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
                         self._h[angle,strength,coherence,pixeltype] = h
     
-    def upscale(self, file, show = False, blending = None):
+    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
         img_original_ycrcb = Image.from_file(file).to_ycrcb()
         img_original_grey = img_original_ycrcb.to_grayscale()
         
@@ -180,6 +182,7 @@ class RAISR:
         operationcount = 0
         totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
         for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+            # TODO: Use tqdm progress bar
             if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                 print('\r|', end='')
                 print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -207,11 +210,13 @@ class RAISR:
         
         if blending == 'hamming':
             for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col)
-                ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col)
+                # TODO: Use tqdm progress bar
+                ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                 changed = bin(ct_upscaled ^ ct_filtered).count('1')
-                # TODO: Replace by sigmoidal function using a lookup table
-                weight = np.sqrt(1. - (1. - 0.125*changed)**2)
+                # TODO: Find best weights for blending
+                #weight = [0.0, 0.15, 0.4, 0.67, 0.75, 0.9, 0.95, 0.98, 1.0][changed]
+                weight = [0.0, 0.484, 0.661, 0.781, 0.866, 0.927, 0.968, 0.992, 1.0][changed]
                 img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
                 img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
         
@@ -260,6 +265,7 @@ class RAISR:
     
         # SVD calculation
         G = np.vstack((gx,gy)).T
+        # TODO: Is this the right way to do that product??
         GTWG = G.T.dot(self._weighting).dot(G)
         w, v = np.linalg.eigh(GTWG);
     

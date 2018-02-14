@@ -36,6 +36,7 @@ class Image:
     
     @classmethod
     def from_file(cls, fname):
+        # TODO: Error if file does not exist
         return cls(cv2.imread(fname), mode = 'RGB')
         
     def __getitem__(self, indices):
