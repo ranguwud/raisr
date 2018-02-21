@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import cv2
 import numpy as np
+import scipy.sparse.csgraph
 import pickle
 import matplotlib.pyplot as plt
 from math import atan2, floor, pi
@@ -219,6 +220,45 @@ class RAISR:
                 weight = [0.0, 0.484, 0.661, 0.781, 0.866, 0.927, 0.968, 0.992, 1.0][changed]
                 img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
                 img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+        
+        if blending == 'randomness':
+            operationcount = 0
+            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
+            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                # TODO: Use tqdm progress bar
+                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                    print('\r|', end='')
+                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                operationcount += 1
+
+                ct = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                if ct == 0:
+                    lcc = 0
+                else:
+                    a = np.array([[128, 16, 4], [64, 0, 2], [32, 8, 1]])
+                    truths = (np.bitwise_and(a, ct) > 0).astype('float')
+                    adjacency = np.diag(np.ones(9))
+                    vert = (np.diff(truths, axis = 0) == 0).ravel()
+                    for i in range(len(vert)):
+                        if vert[i]:
+                            adjacency[i,i+3] = 1
+                            adjacency[i+3,i] = 1
+                    horz = (np.diff(truths, axis = 1) == 0)
+                    for row in range(horz.shape[0]):
+                        for col in range(horz.shape[1]):
+                            if horz[row,col]:
+                                adjacency[3*row+col, 3*row+col+1] = 1
+                                adjacency[3*row+col+1, 3*row+col] = 1
+                    n, labels = scipy.sparse.csgraph.connected_components(adjacency, directed = False)
+                    occurences = [list(labels).count(i) for i in range(n)]
+                    occurences.sort()
+                    lcc = occurences[0]
+                weight = (1.0, 0.968, 0.87, 0.66, 0.0)[lcc]
+                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                
         
 #        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
 #                   vmin = -0.1, vmax = 0.1, cmap=plt.cm.seismic)
