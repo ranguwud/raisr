@@ -233,7 +233,9 @@ class RAISR:
                     print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
                 operationcount += 1
 
-                ct = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
+                ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
+                ct = ct_greater | ct_less
                 if ct == 0:
                     lcc = 0
                 else:
