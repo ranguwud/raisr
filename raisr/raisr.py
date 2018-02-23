@@ -210,18 +210,63 @@ class RAISR:
         img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
         
         if blending == 'hamming':
+            weight_table = np.zeros((256, 256))
+            for ct_upscaled in range(256):
+                for ct_filtered in range(256):
+                    changed = bin(ct_upscaled ^ ct_filtered).count('1')
+                    # TODO: Find best weights for blending
+                    weight_table[ct_upscaled, ct_filtered] = np.sqrt(1. - (1. - 0.125*changed)**2)
+            
+            operationcount = 0
+            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
             for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
                 # TODO: Use tqdm progress bar
+                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                    print('\r|', end='')
+                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                operationcount += 1
+
                 ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                 ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
-                changed = bin(ct_upscaled ^ ct_filtered).count('1')
-                # TODO: Find best weights for blending
-                #weight = [0.0, 0.15, 0.4, 0.67, 0.75, 0.9, 0.95, 0.98, 1.0][changed]
-                weight = [0.0, 0.484, 0.661, 0.781, 0.866, 0.927, 0.968, 0.992, 1.0][changed]
+                weight = weight_table[ct_upscaled, ct_filtered]
                 img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
                 img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
         
         if blending == 'randomness':
+            lcc_table = np.zeros(256)
+            for ct in range(256):
+                if ct == 0:
+                    lcc = 0
+                else:
+                    a = np.array([[128, 16, 4], [64, 0, 2], [32, 8, 1]])
+                    truths = (np.bitwise_and(a, ct) > 0).astype('float')
+                    adjacency = np.diag(np.ones(9))
+                    vert = (np.diff(truths, axis = 0) == 0)
+                    for row in range(vert.shape[0]):
+                        for col in range(vert.shape[1]):
+                            if vert[row,col]:
+                                adjacency[3*row+col,3*(row+1)+col] = 1
+                                adjacency[3*(row+1)+col,3*row+col] = 1
+                    horz = (np.diff(truths, axis = 1) == 0)
+                    for row in range(horz.shape[0]):
+                        for col in range(horz.shape[1]):
+                            if horz[row,col]:
+                                adjacency[3*row+col, 3*row+col+1] = 1
+                                adjacency[3*row+col+1, 3*row+col] = 1
+                    n, labels = scipy.sparse.csgraph.connected_components(adjacency, directed = False)
+                    occurences = [list(labels).count(i) for i in range(n)]
+                    occurences.sort()
+                    lcc = occurences[0]
+                lcc_table[ct] = lcc
+                
+            weight_table = np.zeros((256, 256))
+            for ct_greater in range(256):
+                for ct_less in range(256):
+                    lcc = lcc_table[ct_greater | ct_less]
+                    weight_table[ct_less, ct_greater] = np.sqrt(1. - (0.25*lcc)**2)
+                    
             operationcount = 0
             totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
             for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
@@ -235,29 +280,7 @@ class RAISR:
 
                 ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
                 ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
-                ct = ct_greater | ct_less
-                if ct == 0:
-                    lcc = 0
-                else:
-                    a = np.array([[128, 16, 4], [64, 0, 2], [32, 8, 1]])
-                    truths = (np.bitwise_and(a, ct) > 0).astype('float')
-                    adjacency = np.diag(np.ones(9))
-                    vert = (np.diff(truths, axis = 0) == 0).ravel()
-                    for i in range(len(vert)):
-                        if vert[i]:
-                            adjacency[i,i+3] = 1
-                            adjacency[i+3,i] = 1
-                    horz = (np.diff(truths, axis = 1) == 0)
-                    for row in range(horz.shape[0]):
-                        for col in range(horz.shape[1]):
-                            if horz[row,col]:
-                                adjacency[3*row+col, 3*row+col+1] = 1
-                                adjacency[3*row+col+1, 3*row+col] = 1
-                    n, labels = scipy.sparse.csgraph.connected_components(adjacency, directed = False)
-                    occurences = [list(labels).count(i) for i in range(n)]
-                    occurences.sort()
-                    lcc = occurences[0]
-                weight = (1.0, 0.968, 0.87, 0.66, 0.0)[lcc]
+                weight = weight_table[ct_less, ct_greater]
                 img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
                 img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
                 
