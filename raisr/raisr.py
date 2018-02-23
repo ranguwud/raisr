@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import cv2
 import numpy as np
+import scipy.sparse.csgraph
 import pickle
 import matplotlib.pyplot as plt
 from math import atan2, floor, pi
@@ -80,6 +81,7 @@ class RAISR:
         operationcount = 0
         totaloperations = img_high_res.number_of_pixels(margin = self.margin)
         for pixel in img_high_res.pixels(margin = self.margin):
+            # TODO: Use tqdm progress bar
             if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                 print('\r|', end='')
                 print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -158,6 +160,7 @@ class RAISR:
             for angle in range(0, self.angle_bins):
                 for strength in range(0, self.strength_bins):
                     for coherence in range(0, self.coherence_bins):
+                        # TODO: Use tqdm progress bar
                         if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                             print('\r|', end='')
                             print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -168,7 +171,7 @@ class RAISR:
                         h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
                         self._h[angle,strength,coherence,pixeltype] = h
     
-    def upscale(self, file, show = False):
+    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
         img_original_ycrcb = Image.from_file(file).to_ycrcb()
         img_original_grey = img_original_ycrcb.to_grayscale()
         
@@ -180,6 +183,7 @@ class RAISR:
         operationcount = 0
         totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
         for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+            # TODO: Use tqdm progress bar
             if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
                 print('\r|', end='')
                 print('#' * round((operationcount+1)*100/totaloperations/2), end='')
@@ -201,12 +205,98 @@ class RAISR:
         sisr[sisr < 0] = 0.0
         sisr[sisr > 1] = 1.0
 
-        # Scale back to [0,255]
-        sisr = cv2.normalize(sisr.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+        img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
-        img_cheap_upscaled_ycrcb._data[self.margin:height-self.margin,self.margin:width-self.margin,0] = \
-            sisr
+        img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
         
+        if blending == 'hamming':
+            weight_table = np.zeros((256, 256))
+            for ct_upscaled in range(256):
+                for ct_filtered in range(256):
+                    changed = bin(ct_upscaled ^ ct_filtered).count('1')
+                    # TODO: Find best weights for blending
+                    weight_table[ct_upscaled, ct_filtered] = np.sqrt(1. - (1. - 0.125*changed)**2)
+            
+            operationcount = 0
+            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
+            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                # TODO: Use tqdm progress bar
+                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                    print('\r|', end='')
+                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                operationcount += 1
+
+                ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                weight = weight_table[ct_upscaled, ct_filtered]
+                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+        
+        if blending == 'randomness':
+            lcc_table = np.zeros(256)
+            for ct in range(256):
+                if ct == 0:
+                    lcc = 0
+                else:
+                    a = np.array([[128, 16, 4], [64, 0, 2], [32, 8, 1]])
+                    truths = (np.bitwise_and(a, ct) > 0).astype('float')
+                    adjacency = np.diag(np.ones(9))
+                    vert = (np.diff(truths, axis = 0) == 0)
+                    for row in range(vert.shape[0]):
+                        for col in range(vert.shape[1]):
+                            if vert[row,col]:
+                                adjacency[3*row+col,3*(row+1)+col] = 1
+                                adjacency[3*(row+1)+col,3*row+col] = 1
+                    horz = (np.diff(truths, axis = 1) == 0)
+                    for row in range(horz.shape[0]):
+                        for col in range(horz.shape[1]):
+                            if horz[row,col]:
+                                adjacency[3*row+col, 3*row+col+1] = 1
+                                adjacency[3*row+col+1, 3*row+col] = 1
+                    n, labels = scipy.sparse.csgraph.connected_components(adjacency, directed = False)
+                    occurences = [list(labels).count(i) for i in range(n)]
+                    occurences.sort()
+                    lcc = occurences[0]
+                lcc_table[ct] = lcc
+                
+            weight_table = np.zeros((256, 256))
+            for ct_greater in range(256):
+                for ct_less in range(256):
+                    lcc = lcc_table[ct_greater | ct_less]
+                    weight_table[ct_less, ct_greater] = np.sqrt(1. - (0.25*lcc)**2)
+                    
+            operationcount = 0
+            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
+            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                # TODO: Use tqdm progress bar
+                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
+                    print('\r|', end='')
+                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
+                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
+                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
+                operationcount += 1
+
+                ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
+                ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
+                weight = weight_table[ct_less, ct_greater]
+                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                
+        
+#        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
+#                   vmin = -0.1, vmax = 0.1, cmap=plt.cm.seismic)
+#        plt.show()
+#
+#        plt.imshow(img_filtered_grey._data - img_cheap_upscaled_grey._data, interpolation = 'none',
+#                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
+#        plt.show()
+
+        # Scale back to [0,255]
+        img_cheap_upscaled_ycrcb._data[:,:,0] = \
+            cv2.normalize(img_filtered_grey._data.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+
         if show:
             fig = plt.figure()
             ax = fig.add_subplot(1, 3, 1)
@@ -230,6 +320,8 @@ class RAISR:
             
     def hashkey(self, block):
         # Calculate gradient
+        # TODO: This seems to be SLOW. Can it be replaced by differences in
+        # x and y direction, respectively?
         gy, gx = np.gradient(block)
     
         # Transform 2D matrix into 1D array
@@ -238,6 +330,7 @@ class RAISR:
     
         # SVD calculation
         G = np.vstack((gx,gy)).T
+        # TODO: Is this the right way to do that product??
         GTWG = G.T.dot(self._weighting).dot(G)
         w, v = np.linalg.eigh(GTWG);
     
@@ -263,6 +356,7 @@ class RAISR:
             u = (sqrtlamda1 - sqrtlamda2)/(sqrtlamda1 + sqrtlamda2)
     
         # Quantize
+        # TODO: Confirm these values for strength and coherence
         angle = floor(theta/pi*self._angle_bins)
         if lamda < 0.0001:
             strength = 0
