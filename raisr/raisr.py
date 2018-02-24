@@ -4,13 +4,79 @@ import numpy as np
 import scipy.sparse.csgraph
 import pickle
 import matplotlib.pyplot as plt
+import sys
+import os
 from math import atan2, floor, pi
 from .image import Image
+
+try:
+    import tqdm
+    TQDM_AVAILABLE = True
+except ImportError:
+    TQDM_AVAILABLE = False
+
+
+def in_notebook():
+    if 'ipykernel' in sys.modules:
+        if any('SPYDER' in name for name in os.environ):
+            return False
+        if any('PYCHARM' in name for name in os.environ):
+            return False
+        return True
+    else:
+        return False
+
+
+def select_pbar_cls():
+    if TQDM_AVAILABLE:
+        if in_notebook():
+            return tqdm.tqdm_notebook
+        else:
+            return tqdm.tqdm
+    else:
+        return SimpleProgressBar
+
+
+class SimpleProgressBar:
+    def __init__(self, total = 100, desc = "", **kwargs):
+        self._total = total
+        self._desc = desc
+        self._count = 0
+    
+    def __enter__(self):
+        self.open()
+        return self
+    
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+    
+    def __del__(self):
+        self.close()
+    
+    def open(self):
+        if len(self._desc) > 0:
+            print(self._desc)
+    
+    def close(self):
+        print('')
+    
+    def update(self, n = 1):
+        old_count = self._count
+        self._count += n
+        new_count = old_count + n
+        total = self._total
+        if (new_count * 100) // total != (old_count * 100) // total:
+            print('\r|', end='')
+            print('#' * ((new_count * 100) // (2 * total)), end='')
+            print(' ' * (50 - (new_count * 100) // (2 * total)), end='')
+            print('|  {0}%'.format((new_count * 100) // total), end='')
 
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
-                 angle_bins = 24, strength_bins = 3, coherence_bins = 3):
+                 angle_bins = 24, strength_bins = 3, coherence_bins = 3,
+                 pbar_cls = None):
         self._ratio = ratio
         self._patchsize = patchsize
         self._gradientsize = gradientsize
@@ -26,6 +92,11 @@ class RAISR:
                             patchsize * patchsize))
         self._h = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize))
+        
+        if pbar_cls:
+            self._pbar_cls = pbar_cls
+        else:
+            self._pbar_cls = select_pbar_cls()
     
     @staticmethod
     def gaussian2d(shape=(3,3),sigma=0.5):
@@ -78,30 +149,23 @@ class RAISR:
         
         height, width = img_high_res.shape
         
-        operationcount = 0
-        totaloperations = img_high_res.number_of_pixels(margin = self.margin)
-        for pixel in img_high_res.pixels(margin = self.margin):
-            # TODO: Use tqdm progress bar
-            if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                print('\r|', end='')
-                print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-            operationcount += 1
-            # Get patch
-            patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
-            # Get gradient block
-            gradientblock = pixel.patch(self.gradientsize)
-            # Calculate hashkey
-            angle, strength, coherence = self.hashkey(gradientblock)
-            # Get pixel type
-            pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
-            # Compute A'A and A'b
-            ATA, ATb = self.linear_regression_matrices(patch, img_original[pixel.row, pixel.col])
-            # Compute Q and V
-            self._Q[angle,strength,coherence,pixeltype] += ATA
-            self._V[angle,strength,coherence,pixeltype] += ATb
-            #mark[coherence*3+strength, angle, pixeltype] += 1
+        with self._pbar_cls(total = img_high_res.number_of_pixels(margin = self.margin)) as pbar:
+            for pixel in img_high_res.pixels(margin = self.margin):
+                pbar.update()
+                # Get patch
+                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
+                # Get gradient block
+                gradientblock = pixel.patch(self.gradientsize)
+                # Calculate hashkey
+                angle, strength, coherence = self.hashkey(gradientblock)
+                # Get pixel type
+                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+                # Compute A'A and A'b
+                ATA, ATb = self.linear_regression_matrices(patch, img_original[pixel.row, pixel.col])
+                # Compute Q and V
+                self._Q[angle,strength,coherence,pixeltype] += ATA
+                self._V[angle,strength,coherence,pixeltype] += ATb
+                #mark[coherence*3+strength, angle, pixeltype] += 1
     
     def permute_bins(self):
         print('\r', end='')
@@ -154,22 +218,14 @@ class RAISR:
     
     def calculate_optimal_filter(self):
         print('Computing h ...')
-        operationcount = 0
-        totaloperations = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins
-        for pixeltype in range(0, self.ratio * self.ratio):
-            for angle in range(0, self.angle_bins):
-                for strength in range(0, self.strength_bins):
-                    for coherence in range(0, self.coherence_bins):
-                        # TODO: Use tqdm progress bar
-                        if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                            print('\r|', end='')
-                            print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                            print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                            print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-                        operationcount += 1
-
-                        h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
-                        self._h[angle,strength,coherence,pixeltype] = h
+        with self._pbar_cls(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins) as pbar:
+            for pixeltype in range(0, self.ratio * self.ratio):
+                for angle in range(0, self.angle_bins):
+                    for strength in range(0, self.strength_bins):
+                        for coherence in range(0, self.coherence_bins):
+                            pbar.update()
+                            h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
+                            self._h[angle,strength,coherence,pixeltype] = h
     
     def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
         img_original_ycrcb = Image.from_file(file).to_ycrcb()
@@ -180,26 +236,20 @@ class RAISR:
         
         height, width = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
-        operationcount = 0
-        totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
-        for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-            # TODO: Use tqdm progress bar
-            if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                print('\r|', end='')
-                print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-            operationcount += 1
-            patch = pixel.patch(self.patchsize).ravel()
-            # Get gradient block
-            gradientblock = pixel.patch(self.gradientsize)
-            # Calculate hashkey
-            angle, strength, coherence = self.hashkey(gradientblock)
-            # Get pixel type
-            pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
-            
-            sisr[pixel.row - self.margin, pixel.col - self.margin] = \
-                patch.dot(self._h[angle,strength,coherence,pixeltype])
+        
+        with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                pbar.update()
+                patch = pixel.patch(self.patchsize).ravel()
+                # Get gradient block
+                gradientblock = pixel.patch(self.gradientsize)
+                # Calculate hashkey
+                angle, strength, coherence = self.hashkey(gradientblock)
+                # Get pixel type
+                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+                
+                sisr[pixel.row - self.margin, pixel.col - self.margin] = \
+                    patch.dot(self._h[angle,strength,coherence,pixeltype])
         
         #TODO: Do not just cut off, but use cheap upscaled pixels instead
         sisr[sisr < 0] = 0.0
@@ -217,22 +267,15 @@ class RAISR:
                     # TODO: Find best weights for blending
                     weight_table[ct_upscaled, ct_filtered] = np.sqrt(1. - (1. - 0.125*changed)**2)
             
-            operationcount = 0
-            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
-            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                # TODO: Use tqdm progress bar
-                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                    print('\r|', end='')
-                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-                operationcount += 1
-
-                ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
-                ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
-                weight = weight_table[ct_upscaled, ct_filtered]
-                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+            with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                    pbar.update()
+    
+                    ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                    ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                    weight = weight_table[ct_upscaled, ct_filtered]
+                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
         
         if blending == 'randomness':
             lcc_table = np.zeros(256)
@@ -267,22 +310,15 @@ class RAISR:
                     lcc = lcc_table[ct_greater | ct_less]
                     weight_table[ct_less, ct_greater] = np.sqrt(1. - (0.25*lcc)**2)
                     
-            operationcount = 0
-            totaloperations = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)
-            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                # TODO: Use tqdm progress bar
-                if round(operationcount*100/totaloperations) != round((operationcount+1)*100/totaloperations):
-                    print('\r|', end='')
-                    print('#' * round((operationcount+1)*100/totaloperations/2), end='')
-                    print(' ' * (50 - round((operationcount+1)*100/totaloperations/2)), end='')
-                    print('|  ' + str(round((operationcount+1)*100/totaloperations)) + '%', end='')
-                operationcount += 1
-
-                ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
-                ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
-                weight = weight_table[ct_less, ct_greater]
-                img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+            with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
+                    pbar.update()
+    
+                    ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
+                    ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
+                    weight = weight_table[ct_less, ct_greater]
+                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
                 
         
 #        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
