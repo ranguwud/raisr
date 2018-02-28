@@ -149,7 +149,9 @@ class RAISR:
         
         height, width = img_high_res.shape
         
-        with self._pbar_cls(total = img_high_res.number_of_pixels(margin = self.margin)) as pbar:
+        pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
+                                             desc = "Learning")
+        with self._pbar_cls(**pbar_kwargs) as pbar:
             for pixel in img_high_res.pixels(margin = self.margin):
                 pbar.update()
                 # Get patch
@@ -217,8 +219,9 @@ class RAISR:
         return ATA, ATb
     
     def calculate_optimal_filter(self):
-        print('Computing h ...')
-        with self._pbar_cls(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins) as pbar:
+        pbar_kwargs = self._make_pbar_kwargs(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins,
+                                             desc = "Computing h")
+        with self._pbar_cls(**pbar_kwargs) as pbar:
             for pixeltype in range(0, self.ratio * self.ratio):
                 for angle in range(0, self.angle_bins):
                     for strength in range(0, self.strength_bins):
@@ -237,7 +240,9 @@ class RAISR:
         height, width = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
         
-        with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+        pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
+                                             desc = "Upscaling")
+        with self._pbar_cls(**pbar_kwargs) as pbar:
             for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
                 pbar.update()
                 patch = pixel.patch(self.patchsize).ravel()
@@ -267,7 +272,9 @@ class RAISR:
                     # TODO: Find best weights for blending
                     weight_table[ct_upscaled, ct_filtered] = np.sqrt(1. - (1. - 0.125*changed)**2)
             
-            with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+            pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
+                                                 desc = "Blending")
+            with self._pbar_cls(**pbar_kwargs) as pbar:
                 for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
                     pbar.update()
     
@@ -310,7 +317,9 @@ class RAISR:
                     lcc = lcc_table[ct_greater | ct_less]
                     weight_table[ct_less, ct_greater] = np.sqrt(1. - (0.25*lcc)**2)
                     
-            with self._pbar_cls(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin)) as pbar:
+            pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
+                                                 desc = "Blending")
+            with self._pbar_cls(**pbar_kwargs) as pbar:
                 for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
                     pbar.update()
     
@@ -433,3 +442,14 @@ class RAISR:
             plt.axis('off')
             plt.show()
 
+    def _make_pbar_kwargs(self, total = 100, desc = ""):
+        kwargs = {'total': total, 'desc': desc}
+        if total > 1e6:
+            kwargs['mininterval'] = 1
+        else:
+            kwargs['mininterval'] = 0.1
+        if self._pbar_cls.__name__ == 'tqdm':
+            kwargs['bar_format'] =  '{desc}: {percentage:3.0f}%|{bar}| [{elapsed} elapsed/{remaining} remaining]'
+        if self._pbar_cls.__name__ == 'tqdm_notebook':
+            kwargs['bar_format'] =  '{n}/|/ [{elapsed} elapsed/{remaining} remaining]'
+        return kwargs
