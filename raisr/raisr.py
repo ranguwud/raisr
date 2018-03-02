@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import cv2
+import PIL
 import numpy as np
 import scipy.sparse.csgraph
 import pickle
@@ -147,8 +147,6 @@ class RAISR:
         img_low_res = img_original.downscale(self.ratio)
         img_high_res = img_low_res.cheap_interpolate(self.ratio)
         
-        height, width = img_high_res.shape
-        
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
         with self._pbar_cls(**pbar_kwargs) as pbar:
@@ -163,7 +161,7 @@ class RAISR:
                 # Get pixel type
                 pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
                 # Compute A'A and A'b
-                ATA, ATb = self.linear_regression_matrices(patch, img_original[pixel.row, pixel.col])
+                ATA, ATb = self.linear_regression_matrices(patch, img_original.getpixel(pixel.row, pixel.col))
                 # Compute Q and V
                 self._Q[angle,strength,coherence,pixeltype] += ATA
                 self._V[angle,strength,coherence,pixeltype] += ATb
@@ -237,7 +235,7 @@ class RAISR:
         img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
         img_cheap_upscaled_grey = img_original_grey.cheap_interpolate(self.ratio)
         
-        height, width = img_cheap_upscaled_grey.shape
+        width, height = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
@@ -257,12 +255,13 @@ class RAISR:
                     patch.dot(self._h[angle,strength,coherence,pixeltype])
         
         #TODO: Do not just cut off, but use cheap upscaled pixels instead
-        sisr[sisr < 0] = 0.0
-        sisr[sisr > 1] = 1.0
+        sisr[sisr <   0] = 0
+        sisr[sisr > 255] = 255
 
         img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
-        img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
+        img_filtered_grey_data = np.array(img_filtered_grey._image)
+        img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
         
         if blending == 'hamming':
             weight_table = np.zeros((256, 256))
@@ -281,8 +280,8 @@ class RAISR:
                     ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     weight = weight_table[ct_upscaled, ct_filtered]
-                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
         
         if blending == 'randomness':
             lcc_table = np.zeros(256)
@@ -326,8 +325,8 @@ class RAISR:
                     ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
                     ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
                     weight = weight_table[ct_less, ct_greater]
-                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
                 
         
 #        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
@@ -338,9 +337,13 @@ class RAISR:
 #                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
 #        plt.show()
 
-        # Scale back to [0,255]
-        img_cheap_upscaled_ycrcb._data[:,:,0] = \
-            cv2.normalize(img_filtered_grey._data.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+        # TODO: Solve this without explicit calls to PIL
+        img_result_y = Image.from_array(img_filtered_grey_data)._image
+        img_result_cb = img_cheap_upscaled_ycrcb._image.getchannel('Cb')
+        img_result_cr = img_cheap_upscaled_ycrcb._image.getchannel('Cr')
+        img_result = Image(PIL.Image.merge('YCbCr', (img_result_y, 
+                                                     img_result_cb,
+                                                     img_result_cr)))
 
         if show:
             fig = plt.figure()
@@ -352,7 +355,7 @@ class RAISR:
             ax.imshow(img_cheap_upscaled_ycrcb._data[:,:,0], cmap='gray', interpolation='none')
             plt.show()
         
-        return img_cheap_upscaled_ycrcb.to_rgb()
+        return img_result.to_rgb()
 
     def dump_filter(self, fname = "filter.pkl"):
         with open(fname, "wb") as f:

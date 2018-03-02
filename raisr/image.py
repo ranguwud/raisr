@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-import cv2
+import PIL
 import numpy as np
 import weakref
 from scipy.misc import imresize
@@ -12,7 +12,7 @@ class Pixel:
         self._parent = weakref.ref(parent)
         self._col = col
         self._row = row
-        self._value = parent[row, col]
+        self._value = parent.getpixel(row, col)
     
     @property
     def col(self):
@@ -30,105 +30,85 @@ class Pixel:
         return self._parent().patch(self._row, self._col, size)
 
 class Image:
-    def __init__(self, data, mode = 'RGB'):
-        self._data = data
-        self._mode = mode
+    def __init__(self, image):
+        self._image = image
     
     @classmethod
     def from_file(cls, fname):
         # TODO: Error if file does not exist
-        return cls(cv2.imread(fname), mode = 'RGB')
-        
-    def __getitem__(self, indices):
-        return self._data[indices]
+        return cls(PIL.Image.open(fname))
     
+    @classmethod
+    def from_array(cls, arr):
+        return cls(PIL.Image.fromarray(arr, mode = 'L'))
+        
     def patch(self, row, col, size):
         margin = size // 2
-        return self._data[row-margin:row+margin+1, col-margin:col+margin+1]
+        box = (col - margin, row - margin, col + margin + 1, row + margin + 1)
+        return np.array(self._image.crop(box))
     
     def census_transform(self, row, col, operator = np.greater, fuzzyness = 0.0):
-        patch = self.patch(row, col, 3)
+        patch = np.array(self.patch(row, col, 3))
         comp_hi = operator(patch[1,1] + fuzzyness, patch)
         comp_lo = operator(patch[1,1] - fuzzyness, patch)
         bools = np.all((comp_hi, comp_lo), axis = 0).astype(int).ravel()
         return np.dot(bools, np.array((128, 16, 4, 64, 0, 2, 32, 8, 1)))
     
     def pixels(self, *, margin = 0):
-        height, width = self.shape
+        width, height = self.shape
         for row in range(margin, height - margin):
             for col in range(margin, width - margin):
                 yield Pixel(self, row, col)
     
+    def getpixel(self, row, col):
+        return self._image.getpixel((col, row))
+    
     def number_of_pixels(self, *, margin = 0):
-        height, width = self._data.shape
+        width, height = self.shape
         return (height - 2*margin) * (width - 2*margin)
     
     @property
     def shape(self):
-        return self._data.shape
+        return self._image.size
+    
+    @property
+    def mode(self):
+        return self._image.mode
     
     def to_grayscale(self):
-        if self._mode == 'RGB':
-            gray_data = cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb)[:,:,0]
-            gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
-                                                 gray_data.min() / 255.0, gray_data.max() / 255.0,
-                                                 cv2.NORM_MINMAX)
-            return Image(gray_data_normalized, mode = 'gray')
-        elif self._mode == 'YCrCb':
-            gray_data = self._data[:,:,0]
-            gray_data_normalized = cv2.normalize(gray_data.astype('float'), None, 
-                                                 gray_data.min() / 255.0, gray_data.max() / 255.0,
-                                                 cv2.NORM_MINMAX)
-            return Image(gray_data_normalized, mode = 'gray')
+        if self.mode == 'RGB':
+            return self.to_ycrcb().to_grayscale()
+        elif self.mode == 'YCbCr':
+            return Image(self._image.getchannel('Y'))
         else:
-            raise ValueError('Expected RGB or YCrCb mode image.')
+            raise ValueError('Expected RGB or YCbCr mode image.')
     
     def to_ycrcb(self):
-        if self._mode == 'RGB':
-            return Image(cv2.cvtColor(self._data, cv2.COLOR_BGR2YCrCb), mode = 'YCrCb')
+        if self.mode == 'RGB':
+            return Image(self._image.convert('YCbCr'))
         else:
             raise ValueError('Expected RGB mode image.')
     
     def to_rgb(self):
-        if self._mode == 'YCrCb':
-            return Image(cv2.cvtColor(np.uint8(self._data), cv2.COLOR_YCrCb2RGB), mode = 'RGB')
+        if self.mode == 'YCbCr':
+            return Image(self._image.convert('RGB'))
         else:
-            raise ValueError('Expected YCrCb mode image.')
+            raise ValueError('Expected YCbCr mode image.')
 
     def downscale(self, ratio):
         # TODO: Allow to choose downscaling algorithm
-        height, width = self._data.shape
+        width, height = self.shape
         downscaled_height = floor((height+1)/ratio)
         downscaled_width = floor((width+1)/ratio)
-        #TODO: This method is deprecated.
-        return Image(imresize(self._data, (downscaled_height, downscaled_width), interp='bicubic', mode='F'), mode = self._mode)
-        #return cv2.resize(high_res, dsize = (floor((width+1)/self.ratio),floor((height+1)/self.ratio)), interpolation = cv2.INTER_CUBIC)
-        #return skimage.transform.resize(high_res, (floor((height+1)/self.ratio),floor((width+1)/self.ratio)),
-        #                                order = 3)
+        return Image(self._image.resize((downscaled_width, downscaled_height), resample = PIL.Image.BICUBIC))
         
     def cheap_interpolate(self, ratio):
         # TODO: Allow to choose upscaling algorithm.
-        if self._mode == 'gray':
-            height, width = self._data.shape
-            vert_grid = np.linspace(0, height - 1, height)
-            horz_grid = np.linspace(0, width - 1, width)
-            bilinear_interp = interpolate.interp2d(horz_grid, vert_grid, self._data, kind='linear')
-            vert_grid = np.linspace(0, height - 1, height * ratio - 1)
-            horz_grid = np.linspace(0, width - 1, width * ratio - 1)
-            return Image(bilinear_interp(horz_grid, vert_grid), mode = self._mode)
-        else:
-            height, width, chan = self._data.shape
-            vert_grid_LR = np.linspace(0, height - 1, height)
-            horz_grid_LR = np.linspace(0, width - 1, width)
-            vert_grid_HR = np.linspace(0, height - 1, height * ratio - 1)
-            horz_grid_HR = np.linspace(0, width - 1, width * ratio - 1)
-            result = np.zeros((len(vert_grid_HR), len(horz_grid_HR), chan))
-            for idx in range(chan):
-                channel = self._data[:,:,idx]
-                bilinear_interp = interpolate.interp2d(horz_grid_LR, vert_grid_LR, channel, kind='linear')
-                result[:,:,idx] = bilinear_interp(horz_grid_HR, vert_grid_HR)
-            return Image(result, mode = self._mode)
+        width, height = self.shape
+        upscaled_height = (height - 1) * ratio + 1
+        upscaled_width = (width - 1) * ratio + 1
+        return Image(self._image.resize((upscaled_width, upscaled_height), resample = PIL.Image.BILINEAR))
     
     def export(self, fname):
         # TODO: Make this work also for other color modes
-        cv2.imwrite(fname, cv2.cvtColor(self._data, cv2.COLOR_RGB2BGR))
+        self._image.save(fname)
