@@ -228,11 +228,11 @@ class RAISR:
                             self._h[angle,strength,coherence,pixeltype] = h
     
     def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
-        img_original_ycrcb = Image.from_file(file).to_ycrcb()
-        img_original_grey = img_original_ycrcb.to_grayscale()
+        img_original_ycbcr = Image.from_file(file).to_ycbcr()
+        img_original_grey = img_original_ycbcr.to_grayscale()
         
-        img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
-        img_cheap_upscaled_grey = img_cheap_upscaled_ycrcb.to_grayscale()
+        img_cheap_upscaled_ycbcr = img_original_ycbcr.cheap_interpolate(self.ratio)
+        img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
         width, height = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
@@ -257,7 +257,7 @@ class RAISR:
         sisr[sisr <   0] = 0
         sisr[sisr > 255] = 255
 
-        img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
+        img_filtered_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
         img_filtered_grey_data = np.array(img_filtered_grey._image)
         # TODO: Round to intergers before or after blending?
@@ -332,17 +332,17 @@ class RAISR:
                     img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
                 
         
-        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
-                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
-        plt.show()
-
-        plt.imshow(img_filtered_grey_data.astype('float') - np.array(img_cheap_upscaled_grey._image), interpolation = 'none',
-                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
-        plt.show()
+#        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
+#                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
+#        plt.show()
+#
+#        plt.imshow(img_filtered_grey_data.astype('float') - np.array(img_cheap_upscaled_grey._image), interpolation = 'none',
+#                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
+#        plt.show()
 
         img_result_y = Image.from_array(img_filtered_grey_data)
-        img_result_cb = img_cheap_upscaled_ycrcb.getchannel('Cb')
-        img_result_cr = img_cheap_upscaled_ycrcb.getchannel('Cr')
+        img_result_cb = img_cheap_upscaled_ycbcr.getchannel('Cb')
+        img_result_cr = img_cheap_upscaled_ycbcr.getchannel('Cr')
         img_result = Image.from_channels('YCbCr', (img_result_y, img_result_cb, img_result_cr))
 
         if show:
@@ -352,7 +352,7 @@ class RAISR:
             ax = fig.add_subplot(1, 3, 2)
             ax.imshow(img_cheap_upscaled_grey._data, cmap='gray', interpolation='none')
             ax = fig.add_subplot(1, 3, 3)
-            ax.imshow(img_cheap_upscaled_ycrcb._data[:,:,0], cmap='gray', interpolation='none')
+            ax.imshow(img_cheap_upscaled_ycbcr._data[:,:,0], cmap='gray', interpolation='none')
             plt.show()
         
         return img_result.to_rgb()

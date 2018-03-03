@@ -85,13 +85,13 @@ class Image:
     
     def to_grayscale(self):
         if self.mode == 'RGB':
-            return self.to_ycrcb().to_grayscale()
+            return self.to_ycbcr().to_grayscale()
         elif self.mode == 'YCbCr':
             return self.__class__(self._image.getchannel('Y'))
         else:
             raise ValueError('Expected RGB or YCbCr mode image.')
     
-    def to_ycrcb(self):
+    def to_ycbcr(self):
         if self.mode == 'RGB':
             return self.__class__(self._image.convert('YCbCr'))
         else:
