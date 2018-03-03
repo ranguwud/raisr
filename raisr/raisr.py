@@ -141,10 +141,10 @@ class RAISR:
     def coherence_bins(self):
         return self._coherence_bins
 
-    def learn_filters(self, file):
+    def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
-        img_low_res = img_original.downscale(self.ratio)
-        img_high_res = img_low_res.cheap_interpolate(self.ratio)
+        img_low_res = img_original.downscale(self.ratio, method = downscale_method)
+        img_high_res = img_low_res.upscale(self.ratio, method = upscale_method)
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
@@ -227,11 +227,11 @@ class RAISR:
                             h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
                             self._h[angle,strength,coherence,pixeltype] = h
     
-    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
+    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01, method = 'bilinear'):
         img_original_ycbcr = Image.from_file(file).to_ycbcr()
         img_original_grey = img_original_ycbcr.to_grayscale()
         
-        img_cheap_upscaled_ycbcr = img_original_ycbcr.cheap_interpolate(self.ratio)
+        img_cheap_upscaled_ycbcr = img_original_ycbcr.upscale(self.ratio, method = method)
         img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
         width, height = img_cheap_upscaled_grey.shape

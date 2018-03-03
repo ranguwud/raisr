@@ -103,19 +103,39 @@ class Image:
         else:
             raise ValueError('Expected YCbCr mode image.')
 
-    def downscale(self, ratio):
-        # TODO: Allow to choose downscaling algorithm
+    def downscale(self, ratio, method = 'bicubic'):
+        if method == 'bicubic':
+            resample = PIL.Image.BICUBIC
+        elif method == 'bilinear':
+            resample = PIL.Image.BILINEAR
+        elif method == 'lanczos':
+            resample = PIL.Image.LANCZOS
+        elif method == 'nearest':
+            resample = PIL.Image.NEAREST
+        else:
+            raise ValueError('Unknown resampling method "{0}"'.format(method))
+
         width, height = self.shape
         downscaled_height = floor((height+1)/ratio)
         downscaled_width = floor((width+1)/ratio)
-        return self.__class__(self._image.resize((downscaled_width, downscaled_height), resample = PIL.Image.BICUBIC))
+        return self.__class__(self._image.resize((downscaled_width, downscaled_height), resample = resample))
         
-    def cheap_interpolate(self, ratio):
-        # TODO: Allow to choose upscaling algorithm.
+    def upscale(self, ratio, method = 'bilinear'):
+        if method == 'bicubic':
+            resample = PIL.Image.BICUBIC
+        elif method == 'bilinear':
+            resample = PIL.Image.BILINEAR
+        elif method == 'lanczos':
+            resample = PIL.Image.LANCZOS
+        elif method == 'nearest':
+            resample = PIL.Image.NEAREST
+        else:
+            raise ValueError('Unknown resampling method "{0}"'.format(method))
+
         width, height = self.shape
         upscaled_height = (height - 1) * ratio + 1
         upscaled_width = (width - 1) * ratio + 1
-        return self.__class__(self._image.resize((upscaled_width, upscaled_height), resample = PIL.Image.BILINEAR))
+        return self.__class__(self._image.resize((upscaled_width, upscaled_height), resample = resample))
     
     def export(self, fname):
         # TODO: Make this work also for other color modes
