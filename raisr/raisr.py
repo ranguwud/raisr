@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import cv2
 import numpy as np
 import scipy.sparse.csgraph
 import pickle
@@ -142,12 +141,10 @@ class RAISR:
     def coherence_bins(self):
         return self._coherence_bins
 
-    def learn_filters(self, file):
+    def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
-        img_low_res = img_original.downscale(self.ratio)
-        img_high_res = img_low_res.cheap_interpolate(self.ratio)
-        
-        height, width = img_high_res.shape
+        img_low_res = img_original.downscale(self.ratio, method = downscale_method)
+        img_high_res = img_low_res.upscale(self.ratio, method = upscale_method)
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
@@ -163,7 +160,7 @@ class RAISR:
                 # Get pixel type
                 pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
                 # Compute A'A and A'b
-                ATA, ATb = self.linear_regression_matrices(patch, img_original[pixel.row, pixel.col])
+                ATA, ATb = self.linear_regression_matrices(patch, img_original.getpixel(pixel.row, pixel.col))
                 # Compute Q and V
                 self._Q[angle,strength,coherence,pixeltype] += ATA
                 self._V[angle,strength,coherence,pixeltype] += ATb
@@ -230,14 +227,14 @@ class RAISR:
                             h, _, _, _, = np.linalg.lstsq(self._Q[angle,strength,coherence,pixeltype], self._V[angle,strength,coherence,pixeltype], rcond = 1.e-6)
                             self._h[angle,strength,coherence,pixeltype] = h
     
-    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01):
-        img_original_ycrcb = Image.from_file(file).to_ycrcb()
-        img_original_grey = img_original_ycrcb.to_grayscale()
+    def upscale(self, file, show = False, blending = None, fuzzyness = 0.01, method = 'bilinear'):
+        img_original_ycbcr = Image.from_file(file).to_ycbcr()
+        img_original_grey = img_original_ycbcr.to_grayscale()
         
-        img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
-        img_cheap_upscaled_grey = img_original_grey.cheap_interpolate(self.ratio)
+        img_cheap_upscaled_ycbcr = img_original_ycbcr.upscale(self.ratio, method = method)
+        img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
-        height, width = img_cheap_upscaled_grey.shape
+        width, height = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
@@ -257,12 +254,15 @@ class RAISR:
                     patch.dot(self._h[angle,strength,coherence,pixeltype])
         
         #TODO: Do not just cut off, but use cheap upscaled pixels instead
-        sisr[sisr < 0] = 0.0
-        sisr[sisr > 1] = 1.0
+        sisr[sisr <   0] = 0
+        sisr[sisr > 255] = 255
 
-        img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
+        img_filtered_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
-        img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
+        img_filtered_grey_data = np.array(img_filtered_grey._image)
+        # TODO: Round to intergers before or after blending?
+        img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] = np.round(sisr)
+        img_filtered_grey = Image.from_array(img_filtered_grey_data)
         
         if blending == 'hamming':
             weight_table = np.zeros((256, 256))
@@ -281,8 +281,9 @@ class RAISR:
                     ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     weight = weight_table[ct_upscaled, ct_filtered]
-                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                    # TODO: This causes rounding errors
+                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
         
         if blending == 'randomness':
             lcc_table = np.zeros(256)
@@ -326,21 +327,23 @@ class RAISR:
                     ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
                     ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
                     weight = weight_table[ct_less, ct_greater]
-                    img_filtered_grey._data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey._data[pixel.row, pixel.col] += weight * pixel.value
+                    # TODO: This causes rounding errors
+                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
+                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
                 
         
-#        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
-#                   vmin = -0.1, vmax = 0.1, cmap=plt.cm.seismic)
+#        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
+#                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
 #        plt.show()
 #
-#        plt.imshow(img_filtered_grey._data - img_cheap_upscaled_grey._data, interpolation = 'none',
-#                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
+#        plt.imshow(img_filtered_grey_data.astype('float') - np.array(img_cheap_upscaled_grey._image), interpolation = 'none',
+#                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
 #        plt.show()
 
-        # Scale back to [0,255]
-        img_cheap_upscaled_ycrcb._data[:,:,0] = \
-            cv2.normalize(img_filtered_grey._data.astype('float'), None, 0.0, 255.0, cv2.NORM_MINMAX)
+        img_result_y = Image.from_array(img_filtered_grey_data)
+        img_result_cb = img_cheap_upscaled_ycbcr.getchannel('Cb')
+        img_result_cr = img_cheap_upscaled_ycbcr.getchannel('Cr')
+        img_result = Image.from_channels('YCbCr', (img_result_y, img_result_cb, img_result_cr))
 
         if show:
             fig = plt.figure()
@@ -349,10 +352,10 @@ class RAISR:
             ax = fig.add_subplot(1, 3, 2)
             ax.imshow(img_cheap_upscaled_grey._data, cmap='gray', interpolation='none')
             ax = fig.add_subplot(1, 3, 3)
-            ax.imshow(img_cheap_upscaled_ycrcb._data[:,:,0], cmap='gray', interpolation='none')
+            ax.imshow(img_cheap_upscaled_ycbcr._data[:,:,0], cmap='gray', interpolation='none')
             plt.show()
         
-        return img_cheap_upscaled_ycrcb.to_rgb()
+        return img_result.to_rgb()
 
     def dump_filter(self, fname = "filter.pkl"):
         with open(fname, "wb") as f:
@@ -367,7 +370,7 @@ class RAISR:
         # Calculate gradient
         # TODO: This seems to be SLOW. Can it be replaced by differences in
         # x and y direction, respectively?
-        gy, gx = np.gradient(block)
+        gy, gx = np.gradient(block.astype('float64'))
     
         # Transform 2D matrix into 1D array
         gx = gx.ravel()
@@ -403,9 +406,9 @@ class RAISR:
         # Quantize
         # TODO: Confirm these values for strength and coherence
         angle = floor(theta/pi*self._angle_bins)
-        if lamda < 0.0001:
+        if lamda < 100:
             strength = 0
-        elif lamda > 0.001:
+        elif lamda > 400:
             strength = 2
         else:
             strength = 1
