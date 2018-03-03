@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-import PIL
 import numpy as np
 import scipy.sparse.csgraph
 import pickle
@@ -337,13 +336,10 @@ class RAISR:
 #                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
 #        plt.show()
 
-        # TODO: Solve this without explicit calls to PIL
-        img_result_y = Image.from_array(img_filtered_grey_data)._image
-        img_result_cb = img_cheap_upscaled_ycrcb._image.getchannel('Cb')
-        img_result_cr = img_cheap_upscaled_ycrcb._image.getchannel('Cr')
-        img_result = Image(PIL.Image.merge('YCbCr', (img_result_y, 
-                                                     img_result_cb,
-                                                     img_result_cr)))
+        img_result_y = Image.from_array(img_filtered_grey_data)
+        img_result_cb = img_cheap_upscaled_ycrcb.getchannel('Cb')
+        img_result_cr = img_cheap_upscaled_ycrcb.getchannel('Cr')
+        img_result = Image.from_channels('YCbCr', (img_result_y, img_result_cb, img_result_cr))
 
         if show:
             fig = plt.figure()

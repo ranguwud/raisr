@@ -41,6 +41,11 @@ class Image:
     @classmethod
     def from_array(cls, arr):
         return cls(PIL.Image.fromarray(arr, mode = 'L'))
+    
+    @classmethod
+    def from_channels(cls, mode, channels):
+        channel_list = [ch._image for ch in channels]
+        return cls(PIL.Image.merge(mode, channel_list))
         
     def patch(self, row, col, size):
         margin = size // 2
@@ -63,6 +68,9 @@ class Image:
     def getpixel(self, row, col):
         return self._image.getpixel((col, row))
     
+    def getchannel(self, identifier):
+        return self.__class__(self._image.getchannel(identifier))
+    
     def number_of_pixels(self, *, margin = 0):
         width, height = self.shape
         return (height - 2*margin) * (width - 2*margin)
@@ -79,19 +87,19 @@ class Image:
         if self.mode == 'RGB':
             return self.to_ycrcb().to_grayscale()
         elif self.mode == 'YCbCr':
-            return Image(self._image.getchannel('Y'))
+            return self.__class__(self._image.getchannel('Y'))
         else:
             raise ValueError('Expected RGB or YCbCr mode image.')
     
     def to_ycrcb(self):
         if self.mode == 'RGB':
-            return Image(self._image.convert('YCbCr'))
+            return self.__class__(self._image.convert('YCbCr'))
         else:
             raise ValueError('Expected RGB mode image.')
     
     def to_rgb(self):
         if self.mode == 'YCbCr':
-            return Image(self._image.convert('RGB'))
+            return self.__class__(self._image.convert('RGB'))
         else:
             raise ValueError('Expected YCbCr mode image.')
 
@@ -100,14 +108,14 @@ class Image:
         width, height = self.shape
         downscaled_height = floor((height+1)/ratio)
         downscaled_width = floor((width+1)/ratio)
-        return Image(self._image.resize((downscaled_width, downscaled_height), resample = PIL.Image.BICUBIC))
+        return self.__class__(self._image.resize((downscaled_width, downscaled_height), resample = PIL.Image.BICUBIC))
         
     def cheap_interpolate(self, ratio):
         # TODO: Allow to choose upscaling algorithm.
         width, height = self.shape
         upscaled_height = (height - 1) * ratio + 1
         upscaled_width = (width - 1) * ratio + 1
-        return Image(self._image.resize((upscaled_width, upscaled_height), resample = PIL.Image.BILINEAR))
+        return self.__class__(self._image.resize((upscaled_width, upscaled_height), resample = PIL.Image.BILINEAR))
     
     def export(self, fname):
         # TODO: Make this work also for other color modes
