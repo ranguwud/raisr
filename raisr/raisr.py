@@ -232,7 +232,7 @@ class RAISR:
         img_original_grey = img_original_ycrcb.to_grayscale()
         
         img_cheap_upscaled_ycrcb = img_original_ycrcb.cheap_interpolate(self.ratio)
-        img_cheap_upscaled_grey = img_original_grey.cheap_interpolate(self.ratio)
+        img_cheap_upscaled_grey = img_cheap_upscaled_ycrcb.to_grayscale()
         
         width, height = img_cheap_upscaled_grey.shape
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
@@ -260,7 +260,9 @@ class RAISR:
         img_filtered_grey = img_cheap_upscaled_ycrcb.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
         img_filtered_grey_data = np.array(img_filtered_grey._image)
-        img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] = sisr
+        # TODO: Round to intergers before or after blending?
+        img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] = np.round(sisr)
+        img_filtered_grey = Image.from_array(img_filtered_grey_data)
         
         if blending == 'hamming':
             weight_table = np.zeros((256, 256))
@@ -279,6 +281,7 @@ class RAISR:
                     ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
                     weight = weight_table[ct_upscaled, ct_filtered]
+                    # TODO: This causes rounding errors
                     img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
                     img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
         
@@ -324,17 +327,18 @@ class RAISR:
                     ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
                     ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
                     weight = weight_table[ct_less, ct_greater]
+                    # TODO: This causes rounding errors
                     img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
                     img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
                 
         
-#        plt.imshow(img_filtered_grey._data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
-#                   vmin = -0.1, vmax = 0.1, cmap=plt.cm.seismic)
-#        plt.show()
-#
-#        plt.imshow(img_filtered_grey._data - img_cheap_upscaled_grey._data, interpolation = 'none',
-#                   vmin = -0.25, vmax = 0.25, cmap=plt.cm.seismic)
-#        plt.show()
+        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
+                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
+        plt.show()
+
+        plt.imshow(img_filtered_grey_data.astype('float') - np.array(img_cheap_upscaled_grey._image), interpolation = 'none',
+                   vmin = -25, vmax = 25, cmap=plt.cm.seismic)
+        plt.show()
 
         img_result_y = Image.from_array(img_filtered_grey_data)
         img_result_cb = img_cheap_upscaled_ycrcb.getchannel('Cb')
@@ -366,7 +370,7 @@ class RAISR:
         # Calculate gradient
         # TODO: This seems to be SLOW. Can it be replaced by differences in
         # x and y direction, respectively?
-        gy, gx = np.gradient(block)
+        gy, gx = np.gradient(block.astype('float64'))
     
         # Transform 2D matrix into 1D array
         gx = gx.ravel()
@@ -402,9 +406,9 @@ class RAISR:
         # Quantize
         # TODO: Confirm these values for strength and coherence
         angle = floor(theta/pi*self._angle_bins)
-        if lamda < 0.0001:
+        if lamda < 100:
             strength = 0
-        elif lamda > 0.001:
+        elif lamda > 400:
             strength = 2
         else:
             strength = 1
