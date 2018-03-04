@@ -153,12 +153,9 @@ class RAISR:
                 # TODO: Here img_high_res.shape[0] is needed, because the shape
                 # of img_high_res and img_original can differ. Fix!
                 original_line = np.array(img_original._image.crop((self.margin, lineno, img_high_res.shape[0] - self.margin, lineno + 1))).ravel()
+                # TODO: Fix shape of gradient_line
                 gradient_line = np.copy(patch_line[:,...])
                 pbar.update(original_line.shape[0])
-#                # Get patch
-#                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
-#                # Get gradient block
-#                gradientblock = pixel.patch(self.gradientsize)
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
@@ -255,19 +252,23 @@ class RAISR:
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                              desc = "Upscaling")
         with self._pbar_cls(**pbar_kwargs) as pbar:
-            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                pbar.update()
-                patch = pixel.patch(self.patchsize).ravel()
-                # Get gradient block
-                gradientblock = pixel.patch(self.gradientsize)
+            for lineno in range(self.margin, img_cheap_upscaled_grey.shape[1] - self.margin):
+                patch_line = np.array(img_cheap_upscaled_grey._image.crop((0, lineno - self.margin, img_cheap_upscaled_grey.shape[0], lineno + self.margin + 1)))
+                # TODO: Fix shape of gradient_line
+                gradient_line = np.copy(patch_line[:,...])
+                pbar.update(img_cheap_upscaled_grey.shape[0])
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradientblock)
+                angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
-                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
-                
-                sisr[pixel.row - self.margin, pixel.col - self.margin] = \
-                    patch.dot(self._h[angle,strength,coherence,pixeltype])
-        
+                pixeltype = self.pixeltype(lineno-self.margin, 
+                                           np.arange(0, img_cheap_upscaled_grey.shape[0] - 2*self.margin))
+
+                for i in range(img_cheap_upscaled_grey.shape[0] - 2*self.margin):
+                    # TODO: It is probably faster to first load all needed h's,
+                    # slice patch and then use a suitable einsum() call.
+                    sisr[lineno - self.margin, i] = \
+                        patch_line[:,i:i+self.patchsize].ravel().dot(self._h[angle[i],strength[i],coherence[i],pixeltype[i]])
+
         #TODO: Do not just cut off, but use cheap upscaled pixels instead
         sisr[sisr <   0] = 0
         sisr[sisr > 255] = 255
@@ -466,8 +467,8 @@ class RAISR:
         angle_list = (theta_list * self.angle_bins / np.pi).astype('uint')
         angle_list[angle_list == self.angle_bins] = 0
         
-        strength_list = (eig_max_list > 100).astype('uint')
-        strength_list += (eig_max_list > 400).astype('uint')
+        strength_list = (eig_max_list > 10).astype('uint')
+        strength_list += (eig_max_list > 40).astype('uint')
         
         coherence_list = (u_list > 0.25).astype('uint')
         coherence_list += (u_list > 0.5).astype('uint')
