@@ -218,12 +218,13 @@ class RAISR:
     
     def linear_regression_matrices(self, patch_line_uint8, pixel_line_uint8):
         patch_line = patch_line_uint8.astype('float')
-        pixel_line = pixel_line_uint8.astype('float')        
+        pixel_line = pixel_line_uint8.astype('float')   
+        patchsize = self.patchsize
         # Decompose gradient into list of quadratic pieces
         start = 0
         stop = patch_line.shape[1] - 2 * self.margin
-        slice_list = [slice(i, i + self.patchsize) for i in range(start, stop)]
-        patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (self.patchsize * self.patchsize))
+        slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
+        patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
         
         ATA_list = np.einsum('ij,ik->ijk', patch_list, patch_list)
         ATb_list = patch_list * pixel_line[:, None]
@@ -383,11 +384,12 @@ class RAISR:
     def hashkey(self, block_uint8):
         # Calculate gradient of input block
         gy, gx = np.gradient(block_uint8.astype('float'))
+        gradientsize = self.gradientsize
         
         # Decompose gradient into list of quadratic pieces
-        start = self.margin - self.gradientsize // 2
+        start = self.margin - gradientsize // 2
         stop = start + block_uint8.shape[1] - 2 * self.margin
-        slice_list = [slice(i, i + self.gradientsize) for i in range(start, stop)]
+        slice_list = [slice(i, i + gradientsize) for i in range(start, stop)]
         gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
         gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
         gy_lines = gy_list.reshape((gy_list.shape[0], gy_list.shape[1] * gy_list.shape[2]))
