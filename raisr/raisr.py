@@ -368,13 +368,13 @@ class RAISR:
         with open(fname, "rb") as f:
             self._h = pickle.load(f)
             
-    def hashkey(self, block):
+    def hashkey(self, block_uint8):
         # Calculate gradient of input block
-        gy, gx = np.gradient(block.astype('float'))
+        gy, gx = np.gradient(block_uint8.astype('float'))
         
         # Decompose gradient into list of quadratic pieces
         start = self.margin - self.gradientsize // 2
-        stop = start + block.shape[1] - 2 * self.margin
+        stop = start + block_uint8.shape[1] - 2 * self.margin
         slice_list = [slice(i, i + self.gradientsize) for i in range(start, stop)]
         gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
         gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
@@ -405,8 +405,10 @@ class RAISR:
         
         # Calculate maximum and minimum eigenvalue using general formula
         # for 2-by-2 matrices
-        eig_max_list = tr_list / 2 + np.sqrt(tr_list**2 / 4 - det_list)
-        eig_min_list = tr_list / 2 - np.sqrt(tr_list**2 / 4 - det_list)
+        sqrt_list = np.sqrt(tr_list**2 / 4 - det_list)
+        sqrt_list[np.isnan(sqrt_list)] = 0
+        eig_max_list = tr_list / 2 + sqrt_list
+        eig_min_list = tr_list / 2 - sqrt_list
         
         # There exists no general closed form for the corresponding eigenvector.
         # Depending on whether c != 0 (case 1) or b != 0 (case 2) there are two
@@ -418,16 +420,21 @@ class RAISR:
         # that the resulting vectors are zero, if c == 0 or b == 0, respectively.
         # Since G^T * W * G is symmetric, b == c holds true. So the two vectors
         # are of similar magnitude and adding them can help to rediuce numerical
-        # noise.
+        # noise. The following lines produce v_1 + v_2 or v_1 - v_2, respectively,
+        # depending on which of the two sums has larger norm.
         # More importantly, this also resolves the not explicitly covered case
         # b == c == 0: If b*c is much smaller than a*d, then eig_max will be
         # approximately equal to max(a, d). This results in either v_1 or v_2
         # being approximately zero, while the respective other vector has length
         # of approximately abs(a - d). The only unhandled remaining case is
         # b == c == 0 and a == d, but then the corresponding eigenvector is
-        # not well-defined anyway. Therefore, using the result v = v_1 + v_2 is
+        # not well-defined anyway. Therefore, using the result v = v_1 ± v_2 is
         # sufficient.
-        v_list = v_list_1 + v_list_2
+        v_list_p = v_list_1 + v_list_2
+        v_list_m = v_list_1 - v_list_2
+        norm_list_p = v_list_p[0,:]**2 + v_list_p[1,:]**2
+        norm_list_m = v_list_m[0,:]**2 + v_list_m[1,:]**2
+        v_list = v_list_p * (norm_list_p > norm_list_m) + v_list_m * (norm_list_p <= norm_list_m)
         
         # Calculate theta
         theta_list = np.arctan2(v_list[1,:], v_list[0,:])
@@ -442,6 +449,7 @@ class RAISR:
         # Quantize
         # TODO: Find optimal theshold values
         angle_list = (theta_list * self.angle_bins / np.pi).astype('uint')
+        angle_list[angle_list == self.angle_bins] = 0
         
         strength_list = (eig_max_list > 100).astype('uint')
         strength_list += (eig_max_list > 400).astype('uint')
