@@ -5,7 +5,7 @@ import pickle
 import matplotlib.pyplot as plt
 import sys
 import os
-from math import atan2, floor, pi
+from math import floor
 from .image import Image
 
 try:
@@ -83,8 +83,8 @@ class RAISR:
         self._strength_bins = strength_bins
         self._coherence_bins = coherence_bins
         
-        self._weighting = np.diag(RAISR.gaussian2d([gradientsize, gradientsize], 2).ravel())
-
+        self._gradient_weight = self.__class__.gaussian2d([self.gradientsize, self.gradientsize], 2).ravel()
+        
         self._Q = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize, patchsize * patchsize))
         self._V = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
@@ -111,7 +111,6 @@ class RAISR:
         if sumh != 0:
             h /= sumh
         return h
-
     
     @property
     def ratio(self):
@@ -140,7 +139,7 @@ class RAISR:
     @property
     def coherence_bins(self):
         return self._coherence_bins
-
+    
     def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
         img_low_res = img_original.downscale(self.ratio, method = downscale_method)
@@ -155,7 +154,7 @@ class RAISR:
                 # of img_high_res and img_original can differ. Fix!
                 original_line = np.array(img_original._image.crop((self.margin, lineno, img_high_res.shape[0] - self.margin, lineno + 1))).ravel()
                 gradient_line = np.copy(patch_line[:,...])
-                pbar.update(patch_line.shape[1])
+                pbar.update(original_line.shape[0])
 #                # Get patch
 #                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
 #                # Get gradient block
@@ -397,10 +396,11 @@ class RAISR:
         # Get list of corresponding matrices G, G^T and W
         G_list = np.copy(np.array([gx_lines, gy_lines]).transpose((1,2,0)))
         GT_list = np.copy(G_list.transpose((0,2,1)))
-        weight_list = np.copy(np.repeat(self._weighting[np.newaxis, :, :], G_list.shape[0], axis = 0))
         
         # Calculate list of G^T * W * G matrix products
-        GTWG_list = np.einsum('ijk,ikl,ilm->ijm', GT_list, weight_list, G_list, optimize = True)
+        GTWG_list = np.einsum('ijk,ikl->ijl', GT_list,
+                              self._gradient_weight[None, :, None] * G_list,
+                              optimize = False)
         
         # Extract lists of individual matrix entries by writing
         #                / a  b \
