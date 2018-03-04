@@ -151,22 +151,27 @@ class RAISR:
         with self._pbar_cls(**pbar_kwargs) as pbar:
             for lineno in range(self.margin, img_high_res.shape[1] - self.margin):
                 patch_line = np.array(img_high_res._image.crop((0, lineno - self.margin, img_high_res.shape[0], lineno + self.margin + 1)))
+                # TODO: Here img_high_res.shape[0] is needed, because the shape
+                # of img_high_res and img_original can differ. Fix!
+                original_line = np.array(img_original._image.crop((self.margin, lineno, img_high_res.shape[0] - self.margin, lineno + 1))).ravel()
                 gradient_line = np.copy(patch_line[:,...])
                 pbar.update(patch_line.shape[1])
-                # Get patch
-                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
-                # Get gradient block
-                gradientblock = pixel.patch(self.gradientsize)
+#                # Get patch
+#                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
+#                # Get gradient block
+#                gradientblock = pixel.patch(self.gradientsize)
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
-                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+                pixeltype = self.pixeltype(lineno-self.margin, 
+                                                    np.arange(0, img_high_res.shape[0] - 2*self.margin))
                 # Compute A'A and A'b
-                ATA, ATb = self.linear_regression_matrices(patch, img_original.getpixel(pixel.row, pixel.col))
+                ATA, ATb = self.linear_regression_matrices(patch_line, original_line)
                 # Compute Q and V
-                self._Q[angle,strength,coherence,pixeltype] += ATA
-                self._V[angle,strength,coherence,pixeltype] += ATb
-                #mark[coherence*3+strength, angle, pixeltype] += 1
+                for i in range(len(original_line)):
+                    self._Q[angle[i],strength[i],coherence[i],pixeltype[i]] += ATA[i, ...]
+                    self._V[angle[i],strength[i],coherence[i],pixeltype[i]] += ATb[i, ...]
+                    #mark[coherence*3+strength, angle, pixeltype] += 1
     
     def permute_bins(self):
         print('\r', end='')
@@ -212,10 +217,18 @@ class RAISR:
     def pixeltype(self, row_index, col_index):
         return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
     
-    def linear_regression_matrices(self, patch, pixel):
-        ATA = np.matmul(patch.T, patch)
-        ATb = (patch.T * pixel).ravel()
-        return ATA, ATb
+    def linear_regression_matrices(self, patch_line_uint8, pixel_line_uint8):
+        patch_line = patch_line_uint8.astype('float')
+        pixel_line = pixel_line_uint8.astype('float')        
+        # Decompose gradient into list of quadratic pieces
+        start = 0
+        stop = patch_line.shape[1] - 2 * self.margin
+        slice_list = [slice(i, i + self.patchsize) for i in range(start, stop)]
+        patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (self.patchsize * self.patchsize))
+        
+        ATA_list = np.einsum('ij,ik->ijk', patch_list, patch_list)
+        ATb_list = patch_list * pixel_line[:, None]
+        return ATA_list, ATb_list
     
     def calculate_optimal_filter(self):
         pbar_kwargs = self._make_pbar_kwargs(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins,
