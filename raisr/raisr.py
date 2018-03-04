@@ -217,7 +217,7 @@ class RAISR:
         patch_line = patch_line_uint8.astype('float')
         pixel_line = pixel_line_uint8.astype('float')   
         patchsize = self.patchsize
-        # Decompose gradient into list of quadratic pieces
+        # Decompose patch into list of quadratic pieces
         start = 0
         stop = patch_line.shape[1] - 2 * self.margin
         slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
@@ -247,6 +247,7 @@ class RAISR:
         img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
         width, height = img_cheap_upscaled_grey.shape
+        patchsize = self.patchsize
         sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
@@ -256,18 +257,21 @@ class RAISR:
                 patch_line = np.array(img_cheap_upscaled_grey._image.crop((0, lineno - self.margin, img_cheap_upscaled_grey.shape[0], lineno + self.margin + 1)))
                 # TODO: Fix shape of gradient_line
                 gradient_line = np.copy(patch_line[:,...])
-                pbar.update(img_cheap_upscaled_grey.shape[0])
+                pbar.update(img_cheap_upscaled_grey.shape[0] - 2*self.margin)
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
                 pixeltype = self.pixeltype(lineno-self.margin, 
                                            np.arange(0, img_cheap_upscaled_grey.shape[0] - 2*self.margin))
 
-                for i in range(img_cheap_upscaled_grey.shape[0] - 2*self.margin):
-                    # TODO: It is probably faster to first load all needed h's,
-                    # slice patch and then use a suitable einsum() call.
-                    sisr[lineno - self.margin, i] = \
-                        patch_line[:,i:i+self.patchsize].ravel().dot(self._h[angle[i],strength[i],coherence[i],pixeltype[i]])
+                # Decompose patch into list of quadratic pieces
+                start = 0
+                stop = patch_line.shape[1] - 2 * self.margin
+                # TODO: Do not compute this anew every time
+                slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
+                patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
+                h_list = self._h[angle,strength,coherence,pixeltype,:]
+                sisr[lineno - self.margin] = np.einsum('ij,ij->i', patch_list, h_list)
 
         #TODO: Do not just cut off, but use cheap upscaled pixels instead
         sisr[sisr <   0] = 0
@@ -390,6 +394,7 @@ class RAISR:
         # Decompose gradient into list of quadratic pieces
         start = self.margin - gradientsize // 2
         stop = start + block_uint8.shape[1] - 2 * self.margin
+        # TODO: Do not compute this anew every time
         slice_list = [slice(i, i + gradientsize) for i in range(start, stop)]
         gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
         gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
