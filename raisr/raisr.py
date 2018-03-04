@@ -149,14 +149,16 @@ class RAISR:
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
         with self._pbar_cls(**pbar_kwargs) as pbar:
-            for pixel in img_high_res.pixels(margin = self.margin):
-                pbar.update()
+            for lineno in range(self.margin, img_high_res.shape[1] - self.margin):
+                patch_line = np.array(img_high_res._image.crop((0, lineno - self.margin, img_high_res.shape[0], lineno + self.margin + 1)))
+                gradient_line = np.copy(patch_line[:,...])
+                pbar.update(patch_line.shape[1])
                 # Get patch
                 patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
                 # Get gradient block
                 gradientblock = pixel.patch(self.gradientsize)
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradientblock)
+                angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
                 pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
                 # Compute A'A and A'b
@@ -367,65 +369,87 @@ class RAISR:
             self._h = pickle.load(f)
             
     def hashkey(self, block):
-        # Calculate gradient
-        # TODO: This seems to be SLOW. Can it be replaced by differences in
-        # x and y direction, respectively?
-        gy, gx = np.gradient(block.astype('float64'))
-    
-        # Transform 2D matrix into 1D array
-        gx = gx.ravel()
-        gy = gy.ravel()
-    
-        # SVD calculation
-        G = np.vstack((gx,gy)).T
-        # TODO: Is this the right way to do that product??
-        GTWG = G.T.dot(self._weighting).dot(G)
-        w, v = np.linalg.eigh(GTWG);
-    
-        # Sort w and v according to the descending order of w
-        idx = w.argsort()[::-1]
-        w = w[idx]
-        v = v[:,idx]
-    
+        # Calculate gradient of input block
+        gy, gx = np.gradient(block.astype('float'))
+        
+        # Decompose gradient into list of quadratic pieces
+        start = self.margin - self.gradientsize // 2
+        stop = start + block.shape[1] - 2 * self.margin
+        slice_list = [slice(i, i + self.gradientsize) for i in range(start, stop)]
+        gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
+        gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
+        gy_lines = gy_list.reshape((gy_list.shape[0], gy_list.shape[1] * gy_list.shape[2]))
+        gx_lines = gx_list.reshape((gx_list.shape[0], gx_list.shape[1] * gx_list.shape[2]))
+        
+        # Get list of corresponding matrices G, G^T and W
+        G_list = np.copy(np.array([gx_lines, gy_lines]).transpose((1,2,0)))
+        GT_list = np.copy(G_list.transpose((0,2,1)))
+        weight_list = np.copy(np.repeat(self._weighting[np.newaxis, :, :], G_list.shape[0], axis = 0))
+        
+        # Calculate list of G^T * W * G matrix products
+        GTWG_list = np.einsum('ijk,ikl,ilm->ijm', GT_list, weight_list, G_list, optimize = True)
+        
+        # Extract lists of individual matrix entries by writing
+        #                / a  b \
+        # G^T * W * G = |       |
+        #               \ c  d /
+        a_list = GTWG_list[:, 0, 0]
+        b_list = GTWG_list[:, 0, 1]
+        c_list = GTWG_list[:, 1, 0]
+        d_list = GTWG_list[:, 1, 1]
+        
+        # Calculate lists of determinants and traces using general formula
+        # for 2-by-2 matrices
+        det_list = a_list * d_list - b_list * c_list
+        tr_list = a_list + d_list
+        
+        # Calculate maximum and minimum eigenvalue using general formula
+        # for 2-by-2 matrices
+        eig_max_list = tr_list / 2 + np.sqrt(tr_list**2 / 4 - det_list)
+        eig_min_list = tr_list / 2 - np.sqrt(tr_list**2 / 4 - det_list)
+        
+        # There exists no general closed form for the corresponding eigenvector.
+        # Depending on whether c != 0 (case 1) or b != 0 (case 2) there are two
+        # equivalent results
+        v_list_1 = np.vstack((eig_max_list - d_list, c_list))
+        v_list_2 = np.vstack((b_list, eig_max_list - a_list))
+        
+        # The results from the two cases are always correct, but it can happen
+        # that the resulting vectors are zero, if c == 0 or b == 0, respectively.
+        # Since G^T * W * G is symmetric, b == c holds true. So the two vectors
+        # are of similar magnitude and adding them can help to rediuce numerical
+        # noise.
+        # More importantly, this also resolves the not explicitly covered case
+        # b == c == 0: If b*c is much smaller than a*d, then eig_max will be
+        # approximately equal to max(a, d). This results in either v_1 or v_2
+        # being approximately zero, while the respective other vector has length
+        # of approximately abs(a - d). The only unhandled remaining case is
+        # b == c == 0 and a == d, but then the corresponding eigenvector is
+        # not well-defined anyway. Therefore, using the result v = v_1 + v_2 is
+        # sufficient.
+        v_list = v_list_1 + v_list_2
+        
         # Calculate theta
-        theta = atan2(v[1,0], v[0,0])
-        if theta < 0:
-            theta = theta + pi
-    
-        # Calculate lamda
-        lamda = w[0]
-    
+        theta_list = np.arctan2(v_list[1,:], v_list[0,:])
+        theta_list[theta_list < 0] += np.pi
+        
         # Calculate u
-        sqrtlamda1 = np.sqrt(w[0])
-        sqrtlamda2 = np.sqrt(w[1])
-        if sqrtlamda1 + sqrtlamda2 == 0:
-            u = 0
-        else:
-            u = (sqrtlamda1 - sqrtlamda2)/(sqrtlamda1 + sqrtlamda2)
-    
+        sqrt_eig_max_list = np.sqrt(eig_max_list)
+        sqrt_eig_min_list = np.sqrt(eig_min_list)
+        u_list = (sqrt_eig_max_list - sqrt_eig_min_list) / (sqrt_eig_max_list + sqrt_eig_min_list)
+        u_list[np.logical_not(np.isfinite(u_list))] = 0
+        
         # Quantize
-        # TODO: Confirm these values for strength and coherence
-        angle = floor(theta/pi*self._angle_bins)
-        if lamda < 100:
-            strength = 0
-        elif lamda > 400:
-            strength = 2
-        else:
-            strength = 1
-        if u < 0.25:
-            coherence = 0
-        elif u > 0.5:
-            coherence = 2
-        else:
-            coherence = 1
-    
-        # Bound the output to the desired ranges
-        if angle > 23:
-            angle = 23
-        elif angle < 0:
-            angle = 0
-    
-        return angle, strength, coherence
+        # TODO: Find optimal theshold values
+        angle_list = (theta_list * self.angle_bins / np.pi).astype('uint')
+        
+        strength_list = (eig_max_list > 100).astype('uint')
+        strength_list += (eig_max_list > 400).astype('uint')
+        
+        coherence_list = (u_list > 0.25).astype('uint')
+        coherence_list += (u_list > 0.5).astype('uint')
+        
+        return angle_list, strength_list, coherence_list
     
     def filterplot(self):
         for pixeltype in range(0,self.ratio*self.ratio):
