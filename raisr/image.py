@@ -29,6 +29,35 @@ class Pixel:
     def patch(self, size):
         return self._parent().patch(self._row, self._col, size)
 
+class Line:
+    def __init__(self, parent, lineno, margin):
+        self._parent = weakref.ref(parent)
+        self._lineno = lineno
+        self._margin = margin
+        
+        rect = (0, lineno - margin, parent.shape[0], lineno + margin + 1)
+        self._image = parent._image.crop(rect)
+    
+    @property
+    def parent(self):
+        return self._parent()
+    
+    @property
+    def lineno(self):
+        return self._lineno
+    
+    @property
+    def margin(self):
+        return self._margin
+    
+    def to_array(self, margin = 0):
+        self_margin = self.margin
+        if margin > self_margin:
+            raise ValueError("Margin {0} too large for line height {1}".format(margin, 2*self_margin + 1))
+        rect = (self_margin - margin, self_margin - margin, 
+                self._image.size[0] - (self_margin - margin), self_margin + margin + 1)
+        return np.array(self._image.crop(rect))
+
 class Image:
     def __init__(self, image):
         self._image = image
@@ -64,6 +93,10 @@ class Image:
         for row in range(margin, height - margin):
             for col in range(margin, width - margin):
                 yield Pixel(self, row, col)
+    
+    def lines(self, *, margin = 0):
+        for lineno in range(margin, self.shape[1] - margin):
+            yield Line(self, lineno, margin)
     
     def getpixel(self, row, col):
         return self._image.getpixel((col, row))
@@ -102,6 +135,9 @@ class Image:
             return self.__class__(self._image.convert('RGB'))
         else:
             raise ValueError('Expected YCbCr mode image.')
+    
+    def crop(self, box):
+        return self.__class__(self._image.crop(box))
 
     def downscale(self, ratio, method = 'bicubic'):
         if method == 'bicubic':
@@ -116,8 +152,8 @@ class Image:
             raise ValueError('Unknown resampling method "{0}"'.format(method))
 
         width, height = self.shape
-        downscaled_height = floor((height+1)/ratio)
-        downscaled_width = floor((width+1)/ratio)
+        downscaled_height = floor((height - 1) / ratio) + 1
+        downscaled_width = floor((width - 1) / ratio) + 1
         return self.__class__(self._image.resize((downscaled_width, downscaled_height), resample = resample))
         
     def upscale(self, ratio, method = 'bilinear'):
