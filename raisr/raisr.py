@@ -80,8 +80,8 @@ class RAISR:
         self._patchsize = patchsize
         self._gradientsize = gradientsize
         self._angle_bins = angle_bins
-        self._strength_bins = strength_bins
-        self._coherence_bins = coherence_bins
+        self._strength_thresholds = (10., 40.)
+        self._coherence_thresholds = (0.25, 0.5)
         
         self._gradient_weight = self.__class__.gaussian2d([self.gradientsize, self.gradientsize], 2).ravel()
         
@@ -126,19 +126,27 @@ class RAISR:
     
     @property
     def margin(self):
-        return floor(max(self.patchsize, self.gradientsize) / 2)
+        return max(self.patchsize // 2, self.gradientsize // 2 + 1)
     
     @property
     def angle_bins(self):
         return self._angle_bins
     
     @property
+    def strength_thresholds(self):
+        return self._strength_thresholds
+    
+    @property
     def strength_bins(self):
-        return self._strength_bins
+        return len(self._strength_thresholds) + 1
+    
+    @property
+    def coherence_thresholds(self):
+        return self._coherence_thresholds
     
     @property
     def coherence_bins(self):
-        return self._coherence_bins
+        return len(self._coherence_thresholds) + 1
     
     def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
@@ -156,10 +164,13 @@ class RAISR:
             for img_high_res_line, img_original_line in it:
                 patch_line = img_high_res_line.to_array(margin = self.patchsize // 2)
                 original_line = img_original_line.to_array(margin = 0).ravel()
-                # TODO: Fix shape of gradient_line
-                gradient_line = img_high_res_line.to_array(margin = self.gradientsize // 2 + 1)
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradient_line)
+                angle, strength, coherence = \
+                    img_high_res_line.hashkey(self.gradientsize // 2 + 1,
+                                              self._gradient_weight,
+                                              self.angle_bins,
+                                              self.strength_thresholds,
+                                              self.coherence_thresholds)
                 # Get pixel type
                 pixeltype = img_high_res_line.pixeltype(self.ratio)
 
@@ -255,10 +266,13 @@ class RAISR:
         with self._pbar_cls(**pbar_kwargs) as pbar:
             for line in img_cheap_upscaled_grey.lines(margin = self.margin):
                 patch_line = line.to_array(margin = self.patchsize // 2)
-                # TODO: Fix shape of gradient_line
-                gradient_line = line.to_array(margin = self.gradientsize // 2 + 1)
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradient_line)
+                angle, strength, coherence = \
+                    line.hashkey(self.gradientsize // 2 + 1,
+                                 self._gradient_weight,
+                                 self.angle_bins,
+                                 self.strength_thresholds,
+                                 self.coherence_thresholds)
                 # Get pixel type
                 pixeltype = line.pixeltype(self.ratio)
 
@@ -384,101 +398,7 @@ class RAISR:
         # TODO: Add check for dimensions of h
         with open(fname, "rb") as f:
             self._h = pickle.load(f)
-            
-    def hashkey(self, block_uint8):
-        # Calculate gradient of input block
-        gy, gx = np.gradient(block_uint8.astype('float'))
-        gradientsize = self.gradientsize
-        
-        # Decompose gradient into list of quadratic pieces
-        start = self.margin - gradientsize // 2
-        stop = start + block_uint8.shape[1] - 2 * self.margin
-        # TODO: Do not compute this anew every time
-        slice_list = [slice(i, i + gradientsize) for i in range(start, stop)]
-        gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
-        gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
-        gy_lines = gy_list.reshape((gy_list.shape[0], gy_list.shape[1] * gy_list.shape[2]))
-        gx_lines = gx_list.reshape((gx_list.shape[0], gx_list.shape[1] * gx_list.shape[2]))
-        
-        # Get list of corresponding matrices G, G^T and W
-        G_list = np.copy(np.array([gx_lines, gy_lines]).transpose((1,2,0)))
-        GT_list = np.copy(G_list.transpose((0,2,1)))
-        
-        # Calculate list of G^T * W * G matrix products
-        GTWG_list = np.einsum('ijk,ikl->ijl', GT_list,
-                              self._gradient_weight[None, :, None] * G_list,
-                              optimize = False)
-        
-        # Extract lists of individual matrix entries by writing
-        #                / a  b \
-        # G^T * W * G = |       |
-        #               \ c  d /
-        a_list = GTWG_list[:, 0, 0]
-        b_list = GTWG_list[:, 0, 1]
-        c_list = GTWG_list[:, 1, 0]
-        d_list = GTWG_list[:, 1, 1]
-        
-        # Calculate lists of determinants and traces using general formula
-        # for 2-by-2 matrices
-        det_list = a_list * d_list - b_list * c_list
-        tr_list = a_list + d_list
-        
-        # Calculate maximum and minimum eigenvalue using general formula
-        # for 2-by-2 matrices
-        sqrt_list = np.sqrt(tr_list**2 / 4 - det_list)
-        sqrt_list[np.isnan(sqrt_list)] = 0
-        eig_max_list = tr_list / 2 + sqrt_list
-        eig_min_list = tr_list / 2 - sqrt_list
-        
-        # There exists no general closed form for the corresponding eigenvector.
-        # Depending on whether c != 0 (case 1) or b != 0 (case 2) there are two
-        # equivalent results
-        v_list_1 = np.vstack((eig_max_list - d_list, c_list))
-        v_list_2 = np.vstack((b_list, eig_max_list - a_list))
-        
-        # The results from the two cases are always correct, but it can happen
-        # that the resulting vectors are zero, if c == 0 or b == 0, respectively.
-        # Since G^T * W * G is symmetric, b == c holds true. So the two vectors
-        # are of similar magnitude and adding them can help to rediuce numerical
-        # noise. The following lines produce v_1 + v_2 or v_1 - v_2, respectively,
-        # depending on which of the two sums has larger norm.
-        # More importantly, this also resolves the not explicitly covered case
-        # b == c == 0: If b*c is much smaller than a*d, then eig_max will be
-        # approximately equal to max(a, d). This results in either v_1 or v_2
-        # being approximately zero, while the respective other vector has length
-        # of approximately abs(a - d). The only unhandled remaining case is
-        # b == c == 0 and a == d, but then the corresponding eigenvector is
-        # not well-defined anyway. Therefore, using the result v = v_1 ± v_2 is
-        # sufficient.
-        v_list_p = v_list_1 + v_list_2
-        v_list_m = v_list_1 - v_list_2
-        norm_list_p = v_list_p[0,:]**2 + v_list_p[1,:]**2
-        norm_list_m = v_list_m[0,:]**2 + v_list_m[1,:]**2
-        v_list = v_list_p * (norm_list_p > norm_list_m) + v_list_m * (norm_list_p <= norm_list_m)
-        
-        # Calculate theta
-        theta_list = np.arctan2(v_list[1,:], v_list[0,:])
-        theta_list[theta_list < 0] += np.pi
-        
-        # Calculate u
-        sqrt_eig_max_list = np.sqrt(eig_max_list)
-        sqrt_eig_min_list = np.sqrt(eig_min_list)
-        u_list = (sqrt_eig_max_list - sqrt_eig_min_list) / (sqrt_eig_max_list + sqrt_eig_min_list)
-        u_list[np.logical_not(np.isfinite(u_list))] = 0
-        
-        # Quantize
-        # TODO: Find optimal theshold values
-        angle_list = (theta_list * self.angle_bins / np.pi).astype('uint')
-        angle_list[angle_list == self.angle_bins] = 0
-        
-        strength_list = (eig_max_list > 10).astype('uint')
-        strength_list += (eig_max_list > 40).astype('uint')
-        
-        coherence_list = (u_list > 0.25).astype('uint')
-        coherence_list += (u_list > 0.5).astype('uint')
-        
-        return angle_list, strength_list, coherence_list
-    
+                
     def filterplot(self):
         for pixeltype in range(0,self.ratio*self.ratio):
             maxvalue = self._h[:,:,:,pixeltype].max()
