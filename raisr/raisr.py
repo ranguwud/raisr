@@ -161,8 +161,8 @@ class RAISR:
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
-                pixeltype = self.pixeltype(img_high_res_line.lineno-self.margin, 
-                                           np.arange(0, img_high_res.shape[0] - 2*self.margin))
+                pixeltype = img_high_res_line.pixeltype(self.ratio)
+
                 # Compute A'A and A'b
                 ATA, ATb = self.linear_regression_matrices(patch_line, original_line)
                 # Compute Q and V
@@ -213,9 +213,6 @@ class RAISR:
         self._Q += Qextended
         self._V += Vextended
                 
-    def pixeltype(self, row_index, col_index):
-        return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
-    
     def linear_regression_matrices(self, patch_line_uint8, pixel_line_uint8):
         patch_line = patch_line_uint8.astype('float')
         pixel_line = pixel_line_uint8.astype('float')   
@@ -263,8 +260,7 @@ class RAISR:
                 # Calculate hashkey
                 angle, strength, coherence = self.hashkey(gradient_line)
                 # Get pixel type
-                pixeltype = self.pixeltype(line.lineno-self.margin, 
-                                           np.arange(0, img_cheap_upscaled_grey.shape[0] - 2*self.margin))
+                pixeltype = line.pixeltype(self.ratio)
 
                 # Decompose patch into list of quadratic pieces
                 start = 0

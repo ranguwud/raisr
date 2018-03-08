@@ -2,8 +2,6 @@
 import PIL
 import numpy as np
 import weakref
-from scipy.misc import imresize
-from scipy import interpolate
 from math import floor
 
 
@@ -57,6 +55,11 @@ class Line:
         rect = (self_margin - margin, self_margin - margin, 
                 self._image.size[0] - (self_margin - margin), self_margin + margin + 1)
         return np.array(self._image.crop(rect))
+    
+    def pixeltype(self, ratio):
+        pixel_numbers = np.arange(self.margin, self._image.size[0] - self.margin)
+        return ((self.lineno) % ratio) * ratio + ((pixel_numbers) % ratio)
+
 
 class Image:
     def __init__(self, image):
