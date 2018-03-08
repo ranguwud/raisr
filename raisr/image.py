@@ -60,6 +60,27 @@ class Line:
         pixel_numbers = np.arange(self.margin, self._image.size[0] - self.margin)
         return ((self.lineno) % ratio) * ratio + ((pixel_numbers) % ratio)
 
+    def census_transform(self, operator = np.greater, fuzzyness = 0.0):
+        block = self.to_array(margin = 1)
+        tl = block[0, 0:-2]
+        tc = block[0, 1:-1]
+        tr = block[0, 2:]
+        cl = block[1, 0:-2]
+        cc = block[1, 1:-1]
+        cr = block[1, 2:]
+        bl = block[2, 0:-2]
+        bc = block[2, 1:-1]
+        br = block[2, 2:]
+        
+        pixel_stack = np.vstack((tl, cl, bl, tc, bc, tr, cr, br))
+        comp_hi = operator(cc[None,:] + fuzzyness, pixel_stack)
+        comp_lo = operator(cc[None,:] - fuzzyness, pixel_stack)
+        
+        bools = np.all((comp_hi, comp_lo), axis = 0)
+        byte_vector = np.array((128, 64, 32, 16, 8, 4, 2, 1))
+        
+        return np.sum(bools * byte_vector[:, None], axis = 0)
+
     def hashkey(self, margin, gradient_weight, angle_bins, strength_thresholds, coherence_thresholds):
         # Calculate gradient of input block
         block = self.to_array(margin = margin).astype('float')
