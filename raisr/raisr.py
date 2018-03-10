@@ -7,6 +7,7 @@ import sys
 import os
 from math import floor
 from .image import Image
+from .helper import make_slice_list
 
 try:
     import tqdm
@@ -231,7 +232,7 @@ class RAISR:
         # Decompose patch into list of quadratic pieces
         start = 0
         stop = patch_line.shape[1] - 2 * self.margin
-        slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
+        slice_list = make_slice_list(start, stop, patchsize)
         patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
         
         ATA_list = np.einsum('ij,ik->ijk', patch_list, patch_list)
@@ -280,7 +281,7 @@ class RAISR:
                 start = 0
                 stop = patch_line.shape[1] - 2 * self.margin
                 # TODO: Do not compute this anew every time
-                slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
+                slice_list = make_slice_list(start, stop, patchsize)
                 patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
                 h_list = self._h[angle,strength,coherence,pixeltype,:]
                 result = np.einsum('ij,ij->i', patch_list, h_list).round()
@@ -426,10 +427,10 @@ class RAISR:
 
     def _make_pbar_kwargs(self, total = 100, desc = ""):
         kwargs = {'total': total, 'desc': desc}
-        if total > 1e6:
-            kwargs['mininterval'] = 1
-        else:
-            kwargs['mininterval'] = 0.1
+#        if total > 1e6:
+#            kwargs['mininterval'] = 1
+#        else:
+#            kwargs['mininterval'] = 0.1
         if self._pbar_cls.__name__ == 'tqdm':
             kwargs['bar_format'] =  '{desc}: {percentage:3.0f}%|{bar}| [{elapsed} elapsed/{remaining} remaining]'
         if self._pbar_cls.__name__ == 'tqdm_notebook':

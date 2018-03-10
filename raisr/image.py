@@ -3,6 +3,7 @@ import PIL
 import numpy as np
 import weakref
 from math import floor
+from .helper import make_slice_list
 
 
 class Pixel:
@@ -91,7 +92,7 @@ class Line:
         start = 1
         stop = block.shape[1] - gradientsize
         # TODO: Do not compute this anew every time
-        slice_list = [slice(i, i + gradientsize) for i in range(start, stop)]
+        slice_list = make_slice_list(start, stop, gradientsize)
         gy_list = np.array([gy[..., 1:-1, sl] for sl in slice_list])
         gx_list = np.array([gx[..., 1:-1, sl] for sl in slice_list])
         gy_lines = gy_list.reshape((gy_list.shape[0], gy_list.shape[1] * gy_list.shape[2]))
