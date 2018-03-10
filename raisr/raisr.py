@@ -3,74 +3,10 @@ import numpy as np
 import scipy.sparse.csgraph
 import pickle
 import matplotlib.pyplot as plt
-import sys
-import os
-from math import atan2, floor, pi
+import PIL
+from math import floor
 from .image import Image
-
-try:
-    import tqdm
-    TQDM_AVAILABLE = True
-except ImportError:
-    TQDM_AVAILABLE = False
-
-
-def in_notebook():
-    if 'ipykernel' in sys.modules:
-        if any('SPYDER' in name for name in os.environ):
-            return False
-        if any('PYCHARM' in name for name in os.environ):
-            return False
-        return True
-    else:
-        return False
-
-
-def select_pbar_cls():
-    if TQDM_AVAILABLE:
-        if in_notebook():
-            return tqdm.tqdm_notebook
-        else:
-            return tqdm.tqdm
-    else:
-        return SimpleProgressBar
-
-
-class SimpleProgressBar:
-    def __init__(self, total = 100, desc = "", **kwargs):
-        self._total = total
-        self._desc = desc
-        self._count = 0
-    
-    def __enter__(self):
-        self.open()
-        return self
-    
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.close()
-        return False
-    
-    def __del__(self):
-        self.close()
-    
-    def open(self):
-        if len(self._desc) > 0:
-            print(self._desc)
-    
-    def close(self):
-        print('')
-    
-    def update(self, n = 1):
-        old_count = self._count
-        self._count += n
-        new_count = old_count + n
-        total = self._total
-        if (new_count * 100) // total != (old_count * 100) // total:
-            print('\r|', end='')
-            print('#' * ((new_count * 100) // (2 * total)), end='')
-            print(' ' * (50 - (new_count * 100) // (2 * total)), end='')
-            print('|  {0}%'.format((new_count * 100) // total), end='')
-
+from .helper import select_pbar_cls, make_slice_list
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
@@ -80,11 +16,11 @@ class RAISR:
         self._patchsize = patchsize
         self._gradientsize = gradientsize
         self._angle_bins = angle_bins
-        self._strength_bins = strength_bins
-        self._coherence_bins = coherence_bins
+        self._strength_thresholds = (10., 40.)
+        self._coherence_thresholds = (0.25, 0.5)
         
-        self._weighting = np.diag(RAISR.gaussian2d([gradientsize, gradientsize], 2).ravel())
-
+        self._gradient_weight = self.__class__.gaussian2d([self.gradientsize, self.gradientsize], 2).ravel()
+        
         self._Q = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize, patchsize * patchsize))
         self._V = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
@@ -111,7 +47,6 @@ class RAISR:
         if sumh != 0:
             h /= sumh
         return h
-
     
     @property
     def ratio(self):
@@ -127,44 +62,62 @@ class RAISR:
     
     @property
     def margin(self):
-        return floor(max(self.patchsize, self.gradientsize) / 2)
+        return max(self.patchsize // 2, self.gradientsize // 2 + 1)
     
     @property
     def angle_bins(self):
         return self._angle_bins
     
     @property
+    def strength_thresholds(self):
+        return self._strength_thresholds
+    
+    @property
     def strength_bins(self):
-        return self._strength_bins
+        return len(self._strength_thresholds) + 1
+    
+    @property
+    def coherence_thresholds(self):
+        return self._coherence_thresholds
     
     @property
     def coherence_bins(self):
-        return self._coherence_bins
-
+        return len(self._coherence_thresholds) + 1
+    
     def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
+        shape = img_original.shape
+        box = (0, 0, shape[0] - (shape[0]-1) % self.ratio, shape[1] - (shape[1]-1) % self.ratio)
+        img_original = img_original.crop(box)
         img_low_res = img_original.downscale(self.ratio, method = downscale_method)
         img_high_res = img_low_res.upscale(self.ratio, method = upscale_method)
+        assert img_original.shape == img_high_res.shape
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
+        it = zip(img_high_res.lines(margin = self.margin), img_original.lines(margin = self.margin))
         with self._pbar_cls(**pbar_kwargs) as pbar:
-            for pixel in img_high_res.pixels(margin = self.margin):
-                pbar.update()
-                # Get patch
-                patch = pixel.patch(self.patchsize).ravel().reshape(-1, self.patchsize**2)
-                # Get gradient block
-                gradientblock = pixel.patch(self.gradientsize)
+            for img_high_res_line, img_original_line in it:
+                patch_line = img_high_res_line.to_array(margin = self.patchsize // 2)
+                original_line = img_original_line.to_array(margin = 0).ravel()
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradientblock)
+                angle, strength, coherence = \
+                    img_high_res_line.hashkey(self.gradientsize // 2 + 1,
+                                              self._gradient_weight,
+                                              self.angle_bins,
+                                              self.strength_thresholds,
+                                              self.coherence_thresholds)
                 # Get pixel type
-                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+                pixeltype = img_high_res_line.pixeltype(self.ratio)
+
                 # Compute A'A and A'b
-                ATA, ATb = self.linear_regression_matrices(patch, img_original.getpixel(pixel.row, pixel.col))
+                ATA, ATb = self.linear_regression_matrices(patch_line, original_line)
                 # Compute Q and V
-                self._Q[angle,strength,coherence,pixeltype] += ATA
-                self._V[angle,strength,coherence,pixeltype] += ATb
-                #mark[coherence*3+strength, angle, pixeltype] += 1
+                for i in range(len(original_line)):
+                    self._Q[angle[i],strength[i],coherence[i],pixeltype[i]] += ATA[i, ...]
+                    self._V[angle[i],strength[i],coherence[i],pixeltype[i]] += ATb[i, ...]
+                    #mark[coherence*3+strength, angle, pixeltype] += 1
+                pbar.update(len(original_line))
     
     def permute_bins(self):
         print('\r', end='')
@@ -207,13 +160,19 @@ class RAISR:
         self._Q += Qextended
         self._V += Vextended
                 
-    def pixeltype(self, row_index, col_index):
-        return ((row_index) % self.ratio) * self.ratio + ((col_index) % self.ratio)
-    
-    def linear_regression_matrices(self, patch, pixel):
-        ATA = np.matmul(patch.T, patch)
-        ATb = (patch.T * pixel).ravel()
-        return ATA, ATb
+    def linear_regression_matrices(self, patch_line_uint8, pixel_line_uint8):
+        patch_line = patch_line_uint8.astype('float')
+        pixel_line = pixel_line_uint8.astype('float')   
+        patchsize = self.patchsize
+        # Decompose patch into list of quadratic pieces
+        start = 0
+        stop = patch_line.shape[1] - 2 * self.margin
+        slice_list = make_slice_list(start, stop, patchsize)
+        patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
+        
+        ATA_list = np.einsum('ij,ik->ijk', patch_list, patch_list)
+        ATb_list = patch_list * pixel_line[:, None]
+        return ATA_list, ATb_list
     
     def calculate_optimal_filter(self):
         pbar_kwargs = self._make_pbar_kwargs(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins,
@@ -231,31 +190,51 @@ class RAISR:
         img_original_ycbcr = Image.from_file(file).to_ycbcr()
         img_original_grey = img_original_ycbcr.to_grayscale()
         
+        target_pixel_number = img_original_grey.shape[0] * img_original_grey.shape[1]
+        target_pixel_number *= self.ratio ** 2
+        
+        if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
+            pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
+            PIL.Image.MAX_IMAGE_PIXELS = None
+        else:
+            pil_max_image_pixels = None
+        
         img_cheap_upscaled_ycbcr = img_original_ycbcr.upscale(self.ratio, method = method)
         img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
         width, height = img_cheap_upscaled_grey.shape
-        sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
+        patchsize = self.patchsize
+        sisr = np.zeros((height - 2*self.margin, width - 2*self.margin), dtype = 'uint8')
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                              desc = "Upscaling")
         with self._pbar_cls(**pbar_kwargs) as pbar:
-            for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                pbar.update()
-                patch = pixel.patch(self.patchsize).ravel()
-                # Get gradient block
-                gradientblock = pixel.patch(self.gradientsize)
+            for line in img_cheap_upscaled_grey.lines(margin = self.margin):
+                patch_line = line.to_array(margin = self.patchsize // 2)
                 # Calculate hashkey
-                angle, strength, coherence = self.hashkey(gradientblock)
+                angle, strength, coherence = \
+                    line.hashkey(self.gradientsize // 2 + 1,
+                                 self._gradient_weight,
+                                 self.angle_bins,
+                                 self.strength_thresholds,
+                                 self.coherence_thresholds)
                 # Get pixel type
-                pixeltype = self.pixeltype(pixel.row-self.margin, pixel.col-self.margin)
+                pixeltype = line.pixeltype(self.ratio)
+
+                # Decompose patch into list of quadratic pieces
+                start = 0
+                stop = patch_line.shape[1] - 2 * self.margin
+                # TODO: Do not compute this anew every time
+                slice_list = make_slice_list(start, stop, patchsize)
+                patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
+                h_list = self._h[angle,strength,coherence,pixeltype,:]
+                result = np.einsum('ij,ij->i', patch_list, h_list).round()
                 
-                sisr[pixel.row - self.margin, pixel.col - self.margin] = \
-                    patch.dot(self._h[angle,strength,coherence,pixeltype])
-        
-        #TODO: Do not just cut off, but use cheap upscaled pixels instead
-        sisr[sisr <   0] = 0
-        sisr[sisr > 255] = 255
+                #TODO: Do not just cut off, but use cheap upscaled pixels instead
+                result[result <   0] =   0
+                result[result > 255] = 255
+                sisr[line.lineno - self.margin] = result.astype('uint8')
+                pbar.update(stop)
 
         img_filtered_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
@@ -274,16 +253,19 @@ class RAISR:
             
             pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                                  desc = "Blending")
+            it = zip(img_cheap_upscaled_grey.lines(margin = self.margin), img_filtered_grey.lines(margin = self.margin))
             with self._pbar_cls(**pbar_kwargs) as pbar:
-                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                    pbar.update()
-    
-                    ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
-                    ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                for img_cheap_upscaled_line, img_filtered_line in it:
+                    ct_upscaled = img_cheap_upscaled_line.census_transform(fuzzyness = fuzzyness)
+                    ct_filtered = img_filtered_line.census_transform(fuzzyness = fuzzyness)
                     weight = weight_table[ct_upscaled, ct_filtered]
-                    # TODO: This causes rounding errors
-                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
+                    
+                    blended = img_filtered_line.to_array().astype('float') * (1 - weight)
+                    blended += img_cheap_upscaled_line.to_array().astype('float') * weight
+                    img_filtered_grey_data[img_cheap_upscaled_line.lineno,
+                                           self.margin:-self.margin] = \
+                        blended.round().astype('uint8')
+                    pbar.update(len(ct_upscaled))
         
         if blending == 'randomness':
             lcc_table = np.zeros(256)
@@ -321,15 +303,18 @@ class RAISR:
             pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                                  desc = "Blending")
             with self._pbar_cls(**pbar_kwargs) as pbar:
-                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                    pbar.update()
-    
-                    ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
-                    ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
+                for lines in img_cheap_upscaled_grey.lines(margin = self.margin):
+                    ct_greater = line.census_transform(operator = np.greater, fuzzyness = fuzzyness)
+                    ct_less    = line.census_transform(operator = np.less, fuzzyness = fuzzyness)
                     weight = weight_table[ct_less, ct_greater]
+
+                    blended = line.to_array().astype('float') * (1 - weight)
+                    blended += line.to_array().astype('float') * weight
                     # TODO: This causes rounding errors
-                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
+                    img_filtered_grey_data[line.lineno,
+                                           self.margin:-self.margin] = \
+                        blended.round().astype('uint8')
+                    pbar.update(len(ct_greater))
                 
         
 #        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
@@ -354,6 +339,9 @@ class RAISR:
             ax = fig.add_subplot(1, 3, 3)
             ax.imshow(img_cheap_upscaled_ycbcr._data[:,:,0], cmap='gray', interpolation='none')
             plt.show()
+            
+        if not pil_max_image_pixels is None:
+            PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
         
         return img_result.to_rgb()
 
@@ -365,68 +353,7 @@ class RAISR:
         # TODO: Add check for dimensions of h
         with open(fname, "rb") as f:
             self._h = pickle.load(f)
-            
-    def hashkey(self, block):
-        # Calculate gradient
-        # TODO: This seems to be SLOW. Can it be replaced by differences in
-        # x and y direction, respectively?
-        gy, gx = np.gradient(block.astype('float64'))
-    
-        # Transform 2D matrix into 1D array
-        gx = gx.ravel()
-        gy = gy.ravel()
-    
-        # SVD calculation
-        G = np.vstack((gx,gy)).T
-        # TODO: Is this the right way to do that product??
-        GTWG = G.T.dot(self._weighting).dot(G)
-        w, v = np.linalg.eigh(GTWG);
-    
-        # Sort w and v according to the descending order of w
-        idx = w.argsort()[::-1]
-        w = w[idx]
-        v = v[:,idx]
-    
-        # Calculate theta
-        theta = atan2(v[1,0], v[0,0])
-        if theta < 0:
-            theta = theta + pi
-    
-        # Calculate lamda
-        lamda = w[0]
-    
-        # Calculate u
-        sqrtlamda1 = np.sqrt(w[0])
-        sqrtlamda2 = np.sqrt(w[1])
-        if sqrtlamda1 + sqrtlamda2 == 0:
-            u = 0
-        else:
-            u = (sqrtlamda1 - sqrtlamda2)/(sqrtlamda1 + sqrtlamda2)
-    
-        # Quantize
-        # TODO: Confirm these values for strength and coherence
-        angle = floor(theta/pi*self._angle_bins)
-        if lamda < 100:
-            strength = 0
-        elif lamda > 400:
-            strength = 2
-        else:
-            strength = 1
-        if u < 0.25:
-            coherence = 0
-        elif u > 0.5:
-            coherence = 2
-        else:
-            coherence = 1
-    
-        # Bound the output to the desired ranges
-        if angle > 23:
-            angle = 23
-        elif angle < 0:
-            angle = 0
-    
-        return angle, strength, coherence
-    
+                
     def filterplot(self):
         for pixeltype in range(0,self.ratio*self.ratio):
             maxvalue = self._h[:,:,:,pixeltype].max()
@@ -447,10 +374,6 @@ class RAISR:
 
     def _make_pbar_kwargs(self, total = 100, desc = ""):
         kwargs = {'total': total, 'desc': desc}
-        if total > 1e6:
-            kwargs['mininterval'] = 1
-        else:
-            kwargs['mininterval'] = 0.1
         if self._pbar_cls.__name__ == 'tqdm':
             kwargs['bar_format'] =  '{desc}: {percentage:3.0f}%|{bar}| [{elapsed} elapsed/{remaining} remaining]'
         if self._pbar_cls.__name__ == 'tqdm_notebook':
