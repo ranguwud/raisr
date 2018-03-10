@@ -105,7 +105,7 @@ class Line:
         # Calculate list of G^T * W * G matrix products
         GTWG_list = np.einsum('ijk,ikl->ijl', GT_list,
                               gradient_weight[None, :, None] * G_list,
-                              optimize = False)
+                              optimize = True)
         
         # Extract lists of individual matrix entries by writing
         #                / a  b \
@@ -247,13 +247,17 @@ class Image:
             raise ValueError('Expected RGB or YCbCr mode image.')
     
     def to_ycbcr(self):
-        if self.mode == 'RGB':
+        if self.mode == 'YCbCr':
+            return self
+        elif self.mode == 'RGB' or self.mode == 'RGBA':
             return self.__class__(self._image.convert('YCbCr'))
         else:
             raise ValueError('Expected RGB mode image.')
     
     def to_rgb(self):
-        if self.mode == 'YCbCr':
+        if self.mode == 'RGB':
+            return self
+        elif self.mode == 'YCbCr':
             return self.__class__(self._image.convert('RGB'))
         else:
             raise ValueError('Expected YCbCr mode image.')

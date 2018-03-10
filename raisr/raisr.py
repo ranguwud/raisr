@@ -3,6 +3,7 @@ import numpy as np
 import scipy.sparse.csgraph
 import pickle
 import matplotlib.pyplot as plt
+import PIL
 from math import floor
 from .image import Image
 from .helper import select_pbar_cls, make_slice_list
@@ -189,6 +190,15 @@ class RAISR:
         img_original_ycbcr = Image.from_file(file).to_ycbcr()
         img_original_grey = img_original_ycbcr.to_grayscale()
         
+        target_pixel_number = img_original_grey.shape[0] * img_original_grey.shape[1]
+        target_pixel_number *= self.ratio ** 2
+        
+        if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
+            pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
+            PIL.Image.MAX_IMAGE_PIXELS = None
+        else:
+            pil_max_image_pixels = None
+        
         img_cheap_upscaled_ycbcr = img_original_ycbcr.upscale(self.ratio, method = method)
         img_cheap_upscaled_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         
@@ -329,6 +339,9 @@ class RAISR:
             ax = fig.add_subplot(1, 3, 3)
             ax.imshow(img_cheap_upscaled_ycbcr._data[:,:,0], cmap='gray', interpolation='none')
             plt.show()
+            
+        if not pil_max_image_pixels is None:
+            PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
         
         return img_result.to_rgb()
 
