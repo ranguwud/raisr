@@ -259,7 +259,7 @@ class RAISR:
         
         width, height = img_cheap_upscaled_grey.shape
         patchsize = self.patchsize
-        sisr = np.zeros((height - 2*self.margin, width - 2*self.margin))
+        sisr = np.zeros((height - 2*self.margin, width - 2*self.margin), dtype = 'uint8')
         
         pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                              desc = "Upscaling")
@@ -283,12 +283,13 @@ class RAISR:
                 slice_list = [slice(i, i + patchsize) for i in range(start, stop)]
                 patch_list = np.array([patch_line[..., sl] for sl in slice_list]).reshape(stop, (patchsize * patchsize))
                 h_list = self._h[angle,strength,coherence,pixeltype,:]
-                sisr[line.lineno - self.margin] = np.einsum('ij,ij->i', patch_list, h_list)
+                result = np.einsum('ij,ij->i', patch_list, h_list).round()
+                
+                #TODO: Do not just cut off, but use cheap upscaled pixels instead
+                result[result <   0] =   0
+                result[result > 255] = 255
+                sisr[line.lineno - self.margin] = result.astype('uint8')
                 pbar.update(stop)
-
-        #TODO: Do not just cut off, but use cheap upscaled pixels instead
-        sisr[sisr <   0] = 0
-        sisr[sisr > 255] = 255
 
         img_filtered_grey = img_cheap_upscaled_ycbcr.to_grayscale()
         # TODO: Use patch or similar to perform this assignment
@@ -307,16 +308,19 @@ class RAISR:
             
             pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                                  desc = "Blending")
+            it = zip(img_cheap_upscaled_grey.lines(margin = self.margin), img_filtered_grey.lines(margin = self.margin))
             with self._pbar_cls(**pbar_kwargs) as pbar:
-                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                    pbar.update()
-    
-                    ct_upscaled = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
-                    ct_filtered = img_filtered_grey.census_transform(pixel.row, pixel.col, fuzzyness = fuzzyness)
+                for img_cheap_upscaled_line, img_filtered_line in it:
+                    ct_upscaled = img_cheap_upscaled_line.census_transform(fuzzyness = fuzzyness)
+                    ct_filtered = img_filtered_line.census_transform(fuzzyness = fuzzyness)
                     weight = weight_table[ct_upscaled, ct_filtered]
-                    # TODO: This causes rounding errors
-                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
+                    
+                    blended = img_filtered_line.to_array().astype('float') * (1 - weight)
+                    blended += img_cheap_upscaled_line.to_array().astype('float') * weight
+                    img_filtered_grey_data[img_cheap_upscaled_line.lineno,
+                                           self.margin:-self.margin] = \
+                        blended.round().astype('uint8')
+                    pbar.update(len(ct_upscaled))
         
         if blending == 'randomness':
             lcc_table = np.zeros(256)
@@ -354,15 +358,18 @@ class RAISR:
             pbar_kwargs = self._make_pbar_kwargs(total = img_cheap_upscaled_grey.number_of_pixels(margin = self.margin),
                                                  desc = "Blending")
             with self._pbar_cls(**pbar_kwargs) as pbar:
-                for pixel in img_cheap_upscaled_grey.pixels(margin = self.margin):
-                    pbar.update()
-    
-                    ct_greater = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.greater, fuzzyness = fuzzyness)
-                    ct_less = img_cheap_upscaled_grey.census_transform(pixel.row, pixel.col, operator = np.less, fuzzyness = fuzzyness)
+                for lines in img_cheap_upscaled_grey.lines(margin = self.margin):
+                    ct_greater = line.census_transform(operator = np.greater, fuzzyness = fuzzyness)
+                    ct_less    = line.census_transform(operator = np.less, fuzzyness = fuzzyness)
                     weight = weight_table[ct_less, ct_greater]
+
+                    blended = line.to_array().astype('float') * (1 - weight)
+                    blended += line.to_array().astype('float') * weight
                     # TODO: This causes rounding errors
-                    img_filtered_grey_data[pixel.row, pixel.col] *= (1. - weight)
-                    img_filtered_grey_data[pixel.row, pixel.col] += weight * pixel.value
+                    img_filtered_grey_data[line.lineno,
+                                           self.margin:-self.margin] = \
+                        blended.round().astype('uint8')
+                    pbar.update(len(ct_greater))
                 
         
 #        plt.imshow(img_filtered_grey_data[self.margin:height-self.margin,self.margin:width-self.margin] - sisr, interpolation = 'none',
