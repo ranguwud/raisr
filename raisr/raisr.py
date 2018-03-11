@@ -61,6 +61,16 @@ class RAISR:
     def strength_bins(self):
         return len(self._strength_thresholds) + 1
     
+    def strength_from_log_normal(self, mu, sigma, bins = None):
+        if bins is None:
+            bins = self.strength_bins
+            
+        probability_thresholds = [p / bins for p in range(1, bins)]
+        standard_normal_thresholds = \
+            [scipy.special.ndtri(p) for p in probability_thresholds]
+        self._strength_thresholds = \
+            [np.exp(t * sigma + mu) for t in standard_normal_thresholds]
+    
     @property
     def coherence_thresholds(self):
         return self._coherence_thresholds
@@ -68,6 +78,15 @@ class RAISR:
     @property
     def coherence_bins(self):
         return len(self._coherence_thresholds) + 1
+    
+    def coherence_from_beta(self, alpha, beta, bins = None):
+        if bins is None:
+            bins = self.coherence_bins
+        
+        probability_thresholds = [p / bins for p in range(1, bins)]
+        self._coherence_thresholds = \
+            [scipy.special.betaincinv(alpha, beta, p) for p in probability_thresholds]
+
     
     def learn_filters(self, file, downscale_method = 'bicubic', upscale_method = 'bilinear'):
         img_original = Image.from_file(file).to_grayscale()
@@ -212,18 +231,9 @@ class RAISR:
         plt.show()
         
         if update_thresholds:
-            strength_probability_thresholds = \
-                [p / self.strength_bins for p in range(1, self.strength_bins)]
-            standard_normal_thresholds = \
-                [scipy.special.ndtri(p) for p in strength_probability_thresholds]
-            self._strength_thresholds = \
-                [np.exp(t * log_strengths_sigma + log_strengths_mu) for t in standard_normal_thresholds]
+            self.strength_from_log_normal(log_strengths_mu, log_strengths_sigma)
+            self.coherence_from_beta(coherence_alpha, coherence_beta)
             
-            coherence_probability_thresholds = \
-                [p / self.coherence_bins for p in range(1, self.coherence_bins)]
-            self._coherence_thresholds = \
-                [scipy.special.betaincinv(coherence_alpha, coherence_beta, p) for p in coherence_probability_thresholds]
-    
     def permute_bins(self):
         #TODO: What exactly is going on here?
         P = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize, 7))
