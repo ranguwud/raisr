@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import PIL
 from math import floor
 from .image import Image
-from .helper import select_pbar_cls, make_slice_list
+from .helper import select_pbar_cls, make_slice_list, gaussian2d
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
@@ -19,7 +19,7 @@ class RAISR:
         self._strength_thresholds = (10., 40.)
         self._coherence_thresholds = (0.25, 0.5)
         
-        self._gradient_weight = self.__class__.gaussian2d([self.gradientsize, self.gradientsize], 2).ravel()
+        self._gradient_weight = gaussian2d(self.gradientsize).ravel()
         
         self._Q = np.zeros((angle_bins, strength_bins, coherence_bins, ratio * ratio,
                             patchsize * patchsize, patchsize * patchsize))
@@ -32,21 +32,6 @@ class RAISR:
             self._pbar_cls = pbar_cls
         else:
             self._pbar_cls = select_pbar_cls()
-    
-    @staticmethod
-    def gaussian2d(shape=(3,3),sigma=0.5):
-        """
-        2D gaussian mask - should give the same result as MATLAB's
-        fspecial('gaussian',[shape],[sigma])
-        """
-        m,n = [(ss-1.)/2. for ss in shape]
-        y,x = np.ogrid[-m:m+1,-n:n+1]
-        h = np.exp( -(x*x + y*y) / (2.*sigma*sigma) )
-        h[ h < np.finfo(h.dtype).eps*h.max() ] = 0
-        sumh = h.sum()
-        if sumh != 0:
-            h /= sumh
-        return h
     
     @property
     def ratio(self):
@@ -240,9 +225,6 @@ class RAISR:
                 [scipy.special.betaincinv(coherence_alpha, coherence_beta, p) for p in coherence_probability_thresholds]
     
     def permute_bins(self):
-        print('\r', end='')
-        print(' ' * 60, end='')
-        print('\rPreprocessing permutation matrices P for nearly-free 8x more learning examples ...')
         #TODO: What exactly is going on here?
         P = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize, 7))
         rotate = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize))
@@ -260,23 +242,27 @@ class RAISR:
             P[:,:,i-1] = np.linalg.matrix_power(flip,i2).dot(np.linalg.matrix_power(rotate,i1))
         Qextended = np.zeros((self.angle_bins, self.strength_bins, self.coherence_bins, self.ratio*self.ratio, self.patchsize*self.patchsize, self.patchsize*self.patchsize))
         Vextended = np.zeros((self.angle_bins, self.strength_bins, self.coherence_bins, self.ratio*self.ratio, self.patchsize*self.patchsize))
-        for pixeltype in range(0, self.ratio*self.ratio):
-            for angle in range(0, self.angle_bins):
-                for strength in range(0, self.strength_bins):
-                    for coherence in range(0, self.coherence_bins):
-                        for m in range(1, 8):
-                            m1 = m % 4
-                            m2 = floor(m / 4)
-                            newangleslot = angle
-                            if m2 == 1:
-                                newangleslot = self.angle_bins-angle-1
-                            newangleslot = int(newangleslot-self.angle_bins/2*m1)
-                            while newangleslot < 0:
-                                newangleslot += self.angle_bins
-                            newQ = P[:,:,m-1].T.dot(self._Q[angle,strength,coherence,pixeltype]).dot(P[:,:,m-1])
-                            newV = P[:,:,m-1].T.dot(self._V[angle,strength,coherence,pixeltype])
-                            Qextended[newangleslot,strength,coherence,pixeltype] += newQ
-                            Vextended[newangleslot,strength,coherence,pixeltype] += newV
+        pbar_kwargs = self._make_pbar_kwargs(total = self.ratio * self.ratio * self.angle_bins * self.strength_bins * self.coherence_bins * 7,
+                                             desc = "Permuting")
+        with self._pbar_cls(**pbar_kwargs) as pbar:
+            for pixeltype in range(0, self.ratio*self.ratio):
+                for angle in range(0, self.angle_bins):
+                    for strength in range(0, self.strength_bins):
+                        for coherence in range(0, self.coherence_bins):
+                            for m in range(1, 8):
+                                pbar.update()
+                                m1 = m % 4
+                                m2 = floor(m / 4)
+                                newangleslot = angle
+                                if m2 == 1:
+                                    newangleslot = self.angle_bins-angle-1
+                                newangleslot = int(newangleslot-self.angle_bins/2*m1)
+                                while newangleslot < 0:
+                                    newangleslot += self.angle_bins
+                                newQ = P[:,:,m-1].T.dot(self._Q[angle,strength,coherence,pixeltype]).dot(P[:,:,m-1])
+                                newV = P[:,:,m-1].T.dot(self._V[angle,strength,coherence,pixeltype])
+                                Qextended[newangleslot,strength,coherence,pixeltype] += newQ
+                                Vextended[newangleslot,strength,coherence,pixeltype] += newV
         self._Q += Qextended
         self._V += Vextended
                 
