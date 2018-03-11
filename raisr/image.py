@@ -244,7 +244,7 @@ class Image:
         return self._image.mode
     
     def to_grayscale(self):
-        if self.mode == 'RGB':
+        if self.mode == 'RGB' or self.mode == 'RGBA':
             return self.to_ycbcr().to_grayscale()
         elif self.mode == 'YCbCr':
             return self.__class__(self._image.getchannel('Y'))

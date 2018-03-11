@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import scipy.sparse.csgraph
+import scipy.sparse.csgraph, scipy.special
 import pickle
 import matplotlib.pyplot as plt
 import PIL
@@ -93,6 +93,15 @@ class RAISR:
         img_high_res = img_low_res.upscale(self.ratio, method = upscale_method)
         assert img_original.shape == img_high_res.shape
         
+        target_pixel_number = img_original.shape[0] * img_original.shape[1]
+        target_pixel_number *= self.ratio ** 2
+        
+        if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
+            pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
+            PIL.Image.MAX_IMAGE_PIXELS = None
+        else:
+            pil_max_image_pixels = None
+
         pbar_kwargs = self._make_pbar_kwargs(total = img_high_res.number_of_pixels(margin = self.margin),
                                              desc = "Learning")
         it = zip(img_high_res.lines(margin = self.margin), img_original.lines(margin = self.margin))
@@ -119,14 +128,27 @@ class RAISR:
                     #mark[coherence*3+strength, angle, pixeltype] += 1
                 pbar.update(len(original_line))
     
+        if not pil_max_image_pixels is None:
+            PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
+        
     def get_image_statistics(self, file):
         img = Image.from_file(file).to_grayscale()
         
-        pbar_kwargs = self._make_pbar_kwargs(total = img.number_of_pixels(margin = self.margin),
-                                             desc = "Analyzing")
         angles = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
         strengths = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
         coherences = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
+        
+        target_pixel_number = img.shape[0] * img.shape[1]
+        target_pixel_number *= self.ratio ** 2
+        
+        if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
+            pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
+            PIL.Image.MAX_IMAGE_PIXELS = None
+        else:
+            pil_max_image_pixels = None
+
+        pbar_kwargs = self._make_pbar_kwargs(total = img.number_of_pixels(margin = self.margin),
+                                             desc = "Analyzing")
         with self._pbar_cls(**pbar_kwargs) as pbar:
             for line in img.lines(margin = self.margin):
                 # Calculate hashkey
@@ -143,7 +165,65 @@ class RAISR:
                                           (angles.ravel() + np.pi / 2) % np.pi,
                                           np.pi - (angles.ravel ()+ np.pi / 2) % np.pi))
                 
+        if not pil_max_image_pixels is None:
+            PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
+        
         return angles_permuted, strengths.ravel(), coherences.ravel()
+    
+    def show_image_statistics(self, file):
+        angles, strengths, coherences = self.get_image_statistics(file)
+        strengths = strengths[strengths > 0]
+        
+        # MLE for strength
+        log_strengths_mu = np.mean(np.log(strengths))
+        log_strengths_sigma = np.std(np.log(strengths))
+        log_strengths_range = np.linspace(np.min(np.log(strengths)),
+                                          np.max(np.log(strengths)),
+                                          num = 100)
+        log_strengths_pdf = np.exp(-(log_strengths_range - log_strengths_mu)**2 / 
+                                    (2 * log_strengths_sigma**2))
+        log_strengths_pdf /= np.sqrt(2*np.pi) * log_strengths_sigma
+        log_strengths_str = '$\\mu = {0}$\n$\\sigma = {1}$'.format(round(log_strengths_mu, 2),
+                                                                   round(log_strengths_sigma, 2))
+        
+        # Method of moments for coherence
+        coherence_mean = np.mean(coherences)
+        coherence_var = np.var(coherences, ddof = 1)
+        coherence_alpha = coherence_mean * (1 - coherence_mean)
+        coherence_alpha /= coherence_var
+        coherence_alpha -= 1
+        coherence_alpha *= coherence_mean
+        coherence_beta = coherence_mean * (1 - coherence_mean)
+        coherence_beta /= coherence_var
+        coherence_beta -= 1
+        coherence_beta *= (1 - coherence_mean)
+        
+        coherence_range = np.linspace(0, 1, num = 100)
+        coherence_pdf = np.power(coherence_range, coherence_alpha - 1)
+        coherence_pdf *= np.power(1 - coherence_range, coherence_beta - 1)
+        coherence_pdf /= scipy.special.beta(coherence_alpha, coherence_beta)
+        coherence_str = '$\\alpha = {0}$\n$\\beta = {1}$'.format(round(coherence_alpha, 2),
+                                                                 round(coherence_beta, 2))
+        
+        fig, axes = plt.subplots(nrows = 3, ncols = 1)
+        axes[0].hist(angles / np.pi * 180, bins = 50, normed = True)
+        axes[0].set_xlabel("Angle")
+        axes[1].hist(np.log(strengths), bins = 50, normed = True)
+        axes[1].plot(log_strengths_range, log_strengths_pdf, lw = 2)
+        axes[1].set_xlabel("Log(strength)")
+        axes[1].text(0.95, 0.9, log_strengths_str, 
+                     horizontalalignment='right',
+                     verticalalignment='top',
+                     transform=axes[1].transAxes)
+        axes[2].hist(coherences, bins = 50, normed = True)
+        axes[2].plot(coherence_range, coherence_pdf, lw = 2)
+        axes[2].set_xlabel("Coherence")
+        axes[2].text(0.95, 0.9, coherence_str, 
+                     horizontalalignment='right',
+                     verticalalignment='top',
+                     transform=axes[2].transAxes)
+        fig.tight_layout()
+        plt.show()
     
     def permute_bins(self):
         print('\r', end='')
