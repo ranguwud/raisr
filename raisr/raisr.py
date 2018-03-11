@@ -170,8 +170,9 @@ class RAISR:
         
         return angles_permuted, strengths.ravel(), coherences.ravel()
     
-    def show_image_statistics(self, file):
+    def show_image_statistics(self, file, update_thresholds = False):
         angles, strengths, coherences = self.get_image_statistics(file)
+        # TODO: This throws away all pixels in flat regions. Fix or document.
         strengths = strengths[strengths > 0]
         
         # MLE for strength
@@ -224,6 +225,19 @@ class RAISR:
                      transform=axes[2].transAxes)
         fig.tight_layout()
         plt.show()
+        
+        if update_thresholds:
+            strength_probability_thresholds = \
+                [p / self.strength_bins for p in range(1, self.strength_bins)]
+            standard_normal_thresholds = \
+                [scipy.special.ndtri(p) for p in strength_probability_thresholds]
+            self._strength_thresholds = \
+                [np.exp(t * log_strengths_sigma + log_strengths_mu) for t in standard_normal_thresholds]
+            
+            coherence_probability_thresholds = \
+                [p / self.coherence_bins for p in range(1, self.coherence_bins)]
+            self._coherence_thresholds = \
+                [scipy.special.betaincinv(coherence_alpha, coherence_beta, p) for p in coherence_probability_thresholds]
     
     def permute_bins(self):
         print('\r', end='')
