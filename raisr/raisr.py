@@ -119,6 +119,32 @@ class RAISR:
                     #mark[coherence*3+strength, angle, pixeltype] += 1
                 pbar.update(len(original_line))
     
+    def get_image_statistics(self, file):
+        img = Image.from_file(file).to_grayscale()
+        
+        pbar_kwargs = self._make_pbar_kwargs(total = img.number_of_pixels(margin = self.margin),
+                                             desc = "Analyzing")
+        angles = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
+        strengths = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
+        coherences = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
+        with self._pbar_cls(**pbar_kwargs) as pbar:
+            for line in img.lines(margin = self.margin):
+                # Calculate hashkey
+                angle, strength, coherence = \
+                    line.pixel_statistics(self.gradientsize // 2 + 1,
+                                          self._gradient_weight)
+                angles[line.lineno - self.margin, :] = angle
+                strengths[line.lineno - self.margin, :] = strength
+                coherences[line.lineno - self.margin, :] = coherence
+                pbar.update(img.shape[0] - 2*self.margin)
+                
+        angles_permuted = np.concatenate((angles.ravel(),
+                                          np.pi - angles.ravel(),
+                                          (angles.ravel() + np.pi / 2) % np.pi,
+                                          np.pi - (angles.ravel ()+ np.pi / 2) % np.pi))
+                
+        return angles_permuted, strengths.ravel(), coherences.ravel()
+    
     def permute_bins(self):
         print('\r', end='')
         print(' ' * 60, end='')

@@ -81,8 +81,8 @@ class Line:
         byte_vector = np.array((128, 64, 32, 16, 8, 4, 2, 1))
         
         return np.sum(bools * byte_vector[:, None], axis = 0)
-
-    def hashkey(self, margin, gradient_weight, angle_bins, strength_thresholds, coherence_thresholds):
+    
+    def pixel_statistics(self, margin, gradient_weight):
         # Calculate gradient of input block
         block = self.to_array(margin = margin).astype('float')
         gy, gx = np.gradient(block)
@@ -163,6 +163,11 @@ class Line:
         sqrt_eig_min_list = np.sqrt(eig_min_list)
         u_list = (sqrt_eig_max_list - sqrt_eig_min_list) / (sqrt_eig_max_list + sqrt_eig_min_list)
         u_list[np.logical_not(np.isfinite(u_list))] = 0
+        
+        return theta_list, eig_max_list, u_list
+
+    def hashkey(self, margin, gradient_weight, angle_bins, strength_thresholds, coherence_thresholds):
+        theta_list, eig_max_list, u_list = self.pixel_statistics(margin, gradient_weight)
         
         # Quantize
         # TODO: Find optimal theshold values
