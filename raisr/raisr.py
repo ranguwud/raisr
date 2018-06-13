@@ -7,6 +7,8 @@ import PIL
 from math import floor
 from .image import Image
 from .helper import select_pbar_cls, make_slice_list, gaussian2d
+from .stats import StatsArray, StatsMoments, StatsBaseMoments
+
 
 class RAISR:
     def __init__(self, *, ratio = 2, patchsize = 11, gradientsize = 9,
@@ -18,6 +20,10 @@ class RAISR:
         self._angle_bins = angle_bins
         self._strength_thresholds = (10., 40.)
         self._coherence_thresholds = (0.25, 0.5)
+        
+        self._angle_stat_bin_thresholds = np.arange(1, 180, 2) * np.pi / 180
+        self._strength_stat_bin_thresholds = np.exp(np.arange(0, 15, 0.1))
+        self._coherence_stat_bin_thresholds = np.arange(0.01, 1, 0.01)
         
         self._gradient_weight = gaussian2d(self.gradientsize).ravel()
         
@@ -135,15 +141,20 @@ class RAISR:
         if not pil_max_image_pixels is None:
             PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
         
-    def get_image_statistics(self, file):
+    def get_image_statistics(self, file, angle_stats = None,
+                                    strength_stats = None,
+                                    coherence_stats = None):
         img = Image.from_file(file).to_grayscale()
-        
-        angles = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
-        strengths = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
-        coherences = np.zeros((img.shape[1]-2*self.margin, img.shape[0]-2*self.margin))
         
         target_pixel_number = img.shape[0] * img.shape[1]
         target_pixel_number *= self.ratio ** 2
+        
+        if angle_stats is None:
+            angle_stats = StatsArray()
+        if strength_stats is None:
+            strength_stats = StatsArray()
+        if coherence_stats is None:
+            coherence_stats = StatsArray()
         
         if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
             pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
@@ -159,31 +170,32 @@ class RAISR:
                 angle, strength, coherence = \
                     line.pixel_statistics(self.gradientsize // 2 + 1,
                                           self._gradient_weight)
-                angles[line.lineno - self.margin, :] = angle
-                strengths[line.lineno - self.margin, :] = strength
-                coherences[line.lineno - self.margin, :] = coherence
-                pbar.update(img.shape[0] - 2*self.margin)
                 
-        angles_permuted = np.concatenate((angles.ravel(),
-                                          np.pi - angles.ravel(),
-                                          (angles.ravel() + np.pi / 2) % np.pi,
-                                          np.pi - (angles.ravel ()+ np.pi / 2) % np.pi))
+                # TODO: Add option to turn permuting on/off
+                angle_stats.append(angle / np.pi * 180)
+                angle_stats.append((np.pi - angle) / np.pi * 180)
+                angle_stats.append(((angle + np.pi / 2) % np.pi) / np.pi * 180)
+                angle_stats.append((np.pi - (angle + np.pi / 2) % np.pi) / np.pi * 180)
+                strength_stats.append(strength)
+                coherence_stats.append(coherence)
+
+                pbar.update(img.shape[0] - 2*self.margin)
                 
         if not pil_max_image_pixels is None:
             PIL.Image.MAX_IMAGE_PIXELS = pil_max_image_pixels
         
-        return angles_permuted, strengths.ravel(), coherences.ravel()
+        return angle_stats, strength_stats, coherence_stats
+        
     
     def show_image_statistics(self, file, update_thresholds = False):
         angles, strengths, coherences = self.get_image_statistics(file)
-        # TODO: This throws away all pixels in flat regions. Fix or document.
-        strengths = strengths[strengths > 0]
         
         # MLE for strength
-        log_strengths_mu = np.mean(np.log(strengths))
-        log_strengths_sigma = np.std(np.log(strengths))
-        log_strengths_range = np.linspace(np.min(np.log(strengths)),
-                                          np.max(np.log(strengths)),
+        log_strengths_mu = strengths.log_mean
+        log_strengths_sigma = np.sqrt(strengths.log_var)
+        print(log_strengths_mu, log_strengths_sigma)
+        log_strengths_range = np.linspace(np.log(strengths.min),
+                                          np.log(strengths.max),
                                           num = 100)
         log_strengths_pdf = np.exp(-(log_strengths_range - log_strengths_mu)**2 / 
                                     (2 * log_strengths_sigma**2))
@@ -192,8 +204,9 @@ class RAISR:
                                                                    round(log_strengths_sigma, 2))
         
         # Method of moments for coherence
-        coherence_mean = np.mean(coherences)
-        coherence_var = np.var(coherences, ddof = 1)
+        coherence_mean = coherences.mean
+        coherence_var = coherences.sample_var
+        print(coherence_mean, coherence_var)
         coherence_alpha = coherence_mean * (1 - coherence_mean)
         coherence_alpha /= coherence_var
         coherence_alpha -= 1
@@ -211,16 +224,16 @@ class RAISR:
                                                                  round(coherence_beta, 2))
         
         fig, axes = plt.subplots(nrows = 3, ncols = 1)
-        axes[0].hist(angles / np.pi * 180, bins = 50, normed = True)
+        angles.hist(axis = axes[0])
         axes[0].set_xlabel("Angle")
-        axes[1].hist(np.log(strengths), bins = 50, normed = True)
+        strengths.log_hist(axis = axes[1])
         axes[1].plot(log_strengths_range, log_strengths_pdf, lw = 2)
         axes[1].set_xlabel("Log(strength)")
         axes[1].text(0.95, 0.9, log_strengths_str, 
                      horizontalalignment='right',
                      verticalalignment='top',
                      transform=axes[1].transAxes)
-        axes[2].hist(coherences, bins = 50, normed = True)
+        coherences.hist(axis = axes[2])
         axes[2].plot(coherence_range, coherence_pdf, lw = 2)
         axes[2].set_xlabel("Coherence")
         axes[2].text(0.95, 0.9, coherence_str, 
@@ -233,7 +246,7 @@ class RAISR:
         if update_thresholds:
             self.strength_from_log_normal(log_strengths_mu, log_strengths_sigma)
             self.coherence_from_beta(coherence_alpha, coherence_beta)
-            
+
     def permute_bins(self):
         #TODO: What exactly is going on here?
         P = np.zeros((self.patchsize*self.patchsize, self.patchsize*self.patchsize, 7))
