@@ -7,7 +7,7 @@ import PIL
 from math import floor
 from .image import Image
 from .helper import select_pbar_cls, make_slice_list, gaussian2d
-from .stats import StatsArray, StatsMoments, StatsBaseMoments
+from .stats import StatsArray, StatsMoments, StatsLogMoments
 
 
 class RAISR:
@@ -150,11 +150,12 @@ class RAISR:
         target_pixel_number *= self.ratio ** 2
         
         if angle_stats is None:
-            angle_stats = StatsArray()
+            angle_stats = StatsMoments(np.linspace(0, 180, 51))
         if strength_stats is None:
-            strength_stats = StatsArray()
+            thresholds = np.exp(np.linspace(np.log(1e-10), np.log(1e10), 101))
+            strength_stats = StatsLogMoments(thresholds)
         if coherence_stats is None:
-            coherence_stats = StatsArray()
+            coherence_stats = StatsMoments(np.linspace(0, 1, 51))
         
         if target_pixel_number > PIL.Image.MAX_IMAGE_PIXELS:
             pil_max_image_pixels = PIL.Image.MAX_IMAGE_PIXELS
@@ -194,14 +195,15 @@ class RAISR:
         log_strengths_mu = strengths.log_mean
         log_strengths_sigma = np.sqrt(strengths.log_var)
         print(log_strengths_mu, log_strengths_sigma)
-        log_strengths_range = np.linspace(np.log(strengths.min),
-                                          np.log(strengths.max),
+        log_strengths_range = np.linspace(strengths.log_min,
+                                          strengths.log_max,
                                           num = 100)
-        log_strengths_pdf = np.exp(-(log_strengths_range - log_strengths_mu)**2 / 
+        strengths_range = np.exp(log_strengths_range)
+        log_strengths_pdf = np.exp(-(np.log(strengths_range) - log_strengths_mu)**2 / 
                                     (2 * log_strengths_sigma**2))
         log_strengths_pdf /= np.sqrt(2*np.pi) * log_strengths_sigma
-        log_strengths_str = '$\\mu = {0}$\n$\\sigma = {1}$'.format(round(log_strengths_mu, 2),
-                                                                   round(log_strengths_sigma, 2))
+        log_strengths_str = '$\\sigma = {0}$\n$\\mu = {1}$'.format(round(log_strengths_sigma, 2),
+                                                                   round(log_strengths_mu, 2))
         
         # Method of moments for coherence
         coherence_mean = coherences.mean
@@ -224,17 +226,22 @@ class RAISR:
                                                                  round(coherence_beta, 2))
         
         fig, axes = plt.subplots(nrows = 3, ncols = 1)
-        angles.hist(axis = axes[0])
+        # TODO: This choice of color requires Matplotlib 2 or so.
+        angles.hist(axis = axes[0], color = "C0")
+        axes[0].set_xlim(left = 0, right = 180)
         axes[0].set_xlabel("Angle")
-        strengths.log_hist(axis = axes[1])
-        axes[1].plot(log_strengths_range, log_strengths_pdf, lw = 2)
-        axes[1].set_xlabel("Log(strength)")
+        
+        strengths.log_hist(axis = axes[1], color = "C0")
+        axes[1].plot(strengths_range, log_strengths_pdf, lw = 2, color = "C1")
+        axes[1].set_xlabel("Strength")
         axes[1].text(0.95, 0.9, log_strengths_str, 
                      horizontalalignment='right',
                      verticalalignment='top',
                      transform=axes[1].transAxes)
-        coherences.hist(axis = axes[2])
-        axes[2].plot(coherence_range, coherence_pdf, lw = 2)
+        
+        coherences.hist(axis = axes[2], color = "C0")
+        axes[2].plot(coherence_range, coherence_pdf, lw = 2, color = "C1")
+        axes[2].set_xlim(left = 0, right = 1)
         axes[2].set_xlabel("Coherence")
         axes[2].text(0.95, 0.9, coherence_str, 
                      horizontalalignment='right',
